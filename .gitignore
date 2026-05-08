@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.venv/
+.DS_Store
+*.egg-info/
+
+configs/
+data/
+outputs/
+outputs_*/
+*.frameindex.npz
