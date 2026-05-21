@@ -81,6 +81,9 @@ coordinate_pairs:
 ```
 Domain, periodicity, and labels are inherited from the referenced DoF definitions.
 
+**Scatter overlay**
+A set of xyz trajectory files from a different dataset (e.g. a training set from another level of theory) whose dihedral coordinates are computed using the same geometry code and atom mapping as the main dataset, then rendered as semi-transparent scatter points on top of a density PNG. Purpose: compare what region of dihedral space a training set covers relative to the PIMD/MD population landscape. Defined under the top-level `scatter_overlays:` config key. Applied to all coordinate pairs by default.
+
 ## Architecture Notes
 
 The pipeline is layered with a data-model boundary:

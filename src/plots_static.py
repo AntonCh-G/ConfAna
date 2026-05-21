@@ -203,6 +203,7 @@ def make_density_png(
     outpath: str | Path,
     dpi: int = 300,
     config: dict | None = None,
+    overlays: list[dict] | None = None,
 ) -> Path:
     """Save a 2D coordinate-density PNG for the given coordinate pair.
 
@@ -222,6 +223,16 @@ def make_density_png(
         Optional dict with either the full project config or just the
         ``density:`` section from ``configs/default.yaml``.  Missing keys fall
         back to ``pair.x_domain`` / ``pair.y_domain``.
+    overlays:
+        Optional list of scatter overlay datasets rendered on top of the
+        density heatmap.  Each entry is a dict with keys:
+
+        - ``"df"`` — coordinate table (must contain the same DoF columns as
+          ``pair.feature_columns``)
+        - ``"label"`` — legend entry string
+        - ``"color"`` — matplotlib color string
+
+        Missing DoF columns for a given overlay are skipped with a warning.
 
     Returns
     -------
@@ -352,6 +363,40 @@ def make_density_png(
                     fontsize=7,
                     color="red",
                 )
+
+    # Scatter overlays from external datasets.
+    if overlays:
+        import warnings  # noqa: PLC0415
+
+        for ov in overlays:
+            ov_df = ov["df"]
+            ov_label = ov.get("label", "")
+            ov_color = ov.get("color", "white")
+            if x_col not in ov_df.columns or y_col not in ov_df.columns:
+                warnings.warn(
+                    f"Scatter overlay '{ov_label}': columns {x_col!r} / {y_col!r} "
+                    "not found — skipping.",
+                    stacklevel=2,
+                )
+                continue
+            ov_mask = ov_df[x_col].notna() & ov_df[y_col].notna()
+            ov_x = ov_df.loc[ov_mask, x_col].astype(float).to_numpy()
+            ov_y = ov_df.loc[ov_mask, y_col].astype(float).to_numpy()
+            if len(ov_x) == 0:
+                continue
+            ax.scatter(
+                ov_x,
+                ov_y,
+                s=4,
+                alpha=0.8,
+                color=ov_color,
+                label=ov_label,
+                zorder=4,
+                linewidths=0,
+                rasterized=True,
+            )
+        ax.legend(loc="upper right", fontsize=7, markerscale=3,
+                  framealpha=0.7, handletextpad=0.4)
 
     fig.tight_layout()
 

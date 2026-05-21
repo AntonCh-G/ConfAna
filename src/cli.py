@@ -59,6 +59,72 @@ def _coordinate_pairs(cfg: dict):
     return list_coordinate_pairs(cfg)
 
 
+_OVERLAY_COLORS = ["#e377c2", "#17becf", "#ff7f0e", "#2ca02c"]
+
+
+def _load_scatter_overlays(cfg: dict, out_dir: Path) -> list[dict]:
+    """Load scatter overlay datasets defined under ``scatter_overlays:`` in config.
+
+    For each entry the xyz files are loaded and DoF values are computed using
+    the same geometry code and atom mapping as the main dataset.  The result is
+    a list of dicts ready to pass as the ``overlays`` argument to
+    :func:`~src.plots_static.make_density_png`.
+
+    Parameters
+    ----------
+    cfg:
+        Parsed project config dict.
+    out_dir:
+        Output directory used to locate per-overlay coordinate caches under
+        ``{out_dir}/overlay_cache/{label}/``.
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys ``"df"``, ``"label"``, and ``"color"``.
+        Returns an empty list when ``scatter_overlays:`` is absent or empty.
+    """
+    import copy  # noqa: PLC0415
+
+    from src.io_coordinates import load_or_build_all_coordinates  # noqa: PLC0415
+
+    entries = cfg.get("scatter_overlays")
+    if not entries:
+        return []
+
+    result: list[dict] = []
+    for i, entry in enumerate(entries):
+        path = entry["path"]
+        label = entry.get("label", f"overlay_{i}")
+        color = entry.get("color", _OVERLAY_COLORS[i % len(_OVERLAY_COLORS)])
+        max_points = entry.get("max_points")
+
+        safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+
+        ov_cfg = copy.deepcopy(cfg)
+        ov_cfg["data"]["path_pattern"] = path
+        # Overlays use all frames — no warmup window.
+        ov_cfg["frame_range"] = None
+        # Overlays are single-trajectory files; disable PIMD grouping side-effects.
+        ov_cfg.setdefault("pimd", {})["enabled"] = False
+        # Dedicated cache dir so overlay indices don't collide with the main run.
+        ov_cfg.setdefault("cache", {})["trajectory_cache_dir"] = str(
+            out_dir / "overlay_cache" / safe_label
+        )
+
+        click.echo(f"  Loading overlay '{label}' …")
+        df_ov, cache_hit = load_or_build_all_coordinates(ov_cfg)
+        click.echo(f"    frames={len(df_ov):,}  cache_hit={cache_hit}")
+
+        if max_points is not None and len(df_ov) > max_points:
+            df_ov = df_ov.sample(n=max_points, random_state=42).reset_index(drop=True)
+            click.echo(f"    subsampled → {max_points:,} points")
+
+        result.append({"df": df_ov, "label": label, "color": color})
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -125,11 +191,14 @@ def plot_densities(config: str) -> None:
     df, cache_hit = load_or_build_coordinate_table_from_config(cfg)
     click.echo(f"  frames={len(df):,}  cache_hit={cache_hit}")
 
+    overlays = _load_scatter_overlays(cfg, out)
+
     click.echo("Plotting density PNGs …")
     written: list[str] = []
     for pair_name, pair in _coordinate_pairs(cfg):
         filename = f"density_{pair_name}.png"
-        make_density_png(df, pair, out / filename, dpi=cfg["outputs"]["dpi"], config=cfg)
+        make_density_png(df, pair, out / filename, dpi=cfg["outputs"]["dpi"], config=cfg,
+                         overlays=overlays or None)
         written.append(filename)
     click.echo(f"  Saved {', '.join(written)} → {out}")
     click.echo("plot-densities done.")
@@ -281,6 +350,8 @@ def run_all(config: str, skip_transitions: bool) -> None:
     df, cache_hit = load_or_build_coordinate_table_from_config(cfg)
     click.echo(f"      frames={len(df):,}  cache_hit={cache_hit}")
 
+    overlays = _load_scatter_overlays(cfg, out)
+
     # Phase 7 — density PNGs (without states)
     click.echo("[2/4] Plotting density PNGs …")
     for pair_name, pair in pairs:
@@ -290,6 +361,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
             out / f"density_{pair_name}.png",
             dpi=cfg["outputs"]["dpi"],
             config=cfg,
+            overlays=overlays or None,
         )
 
     # Phase 8 — state assignment
@@ -304,6 +376,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
             out / f"density_{pair_name}_states.png",
             dpi=cfg["outputs"]["dpi"],
             config=cfg,
+            overlays=overlays or None,
         )
 
     # Phases 9–10 — transitions
