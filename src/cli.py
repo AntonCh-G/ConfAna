@@ -43,11 +43,16 @@ import yaml
 
 def _load_cfg(config_path: str) -> dict:
     with open(config_path) as fh:
-        return yaml.safe_load(fh)
+        cfg = yaml.safe_load(fh)
+    if not cfg.get("run_dir"):
+        raise ValueError(
+            f"Config '{config_path}' is missing the required top-level 'run_dir' key."
+        )
+    return cfg
 
 
 def _out_dir(cfg: dict) -> Path:
-    out = Path(cfg["outputs"]["dir"])
+    out = Path(cfg["run_dir"]) / "plots"
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -120,7 +125,8 @@ def _load_scatter_overlays(cfg: dict, out_dir: Path) -> list[dict]:
             df_ov = df_ov.sample(n=max_points, random_state=42).reset_index(drop=True)
             click.echo(f"    subsampled → {max_points:,} points")
 
-        result.append({"df": df_ov, "label": label, "color": color})
+        size = entry.get("size")
+        result.append({"df": df_ov, "label": label, "color": color, "size": size})
 
     return result
 
@@ -197,7 +203,7 @@ def plot_densities(config: str) -> None:
     written: list[str] = []
     for pair_name, pair in _coordinate_pairs(cfg):
         filename = f"density_{pair_name}.png"
-        make_density_png(df, pair, out / filename, dpi=cfg["outputs"]["dpi"], config=cfg,
+        make_density_png(df, pair, out / filename, dpi=cfg["plots"]["dpi"], config=cfg,
                          overlays=overlays or None)
         written.append(filename)
     click.echo(f"  Saved {', '.join(written)} → {out}")
@@ -284,7 +290,7 @@ def compute_transitions(config: str) -> None:
         n_groups = len(result.get("per_group_counts", {}))
         click.echo(f"  {pair_name}: groups={n_groups}")
         filename = f"transition_{pair_name}.png"
-        make_transition_png(result, out / filename, dpi=cfg["outputs"]["dpi"], config=cfg)
+        make_transition_png(result, out / filename, dpi=cfg["plots"]["dpi"], config=cfg)
         written.append(filename)
     click.echo(f"  Saved {', '.join(written)} → {out}")
     click.echo("compute-transitions done.")
@@ -359,7 +365,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
             df,
             pair,
             out / f"density_{pair_name}.png",
-            dpi=cfg["outputs"]["dpi"],
+            dpi=cfg["plots"]["dpi"],
             config=cfg,
             overlays=overlays or None,
         )
@@ -374,7 +380,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
             df,
             pair,
             out / f"density_{pair_name}_states.png",
-            dpi=cfg["outputs"]["dpi"],
+            dpi=cfg["plots"]["dpi"],
             config=cfg,
             overlays=overlays or None,
         )
@@ -405,7 +411,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
             make_transition_png(
                 result,
                 out / f"transition_{pair_name}.png",
-                dpi=cfg["outputs"]["dpi"],
+                dpi=cfg["plots"]["dpi"],
                 config=cfg,
             )
 

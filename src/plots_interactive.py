@@ -55,8 +55,9 @@ _BASE_META_COLUMNS = [
 def _split_plot_config(config: dict | None) -> tuple[dict, dict]:
     """Return ``(root_cfg, density_cfg)`` for full-config or density-only input."""
     cfg = config or {}
-    if "density" in cfg:
-        return cfg, cfg.get("density", {}) or {}
+    plots_cfg = cfg.get("plots", {}) or {}
+    if "density" in plots_cfg:
+        return cfg, plots_cfg.get("density", {}) or {}
     return cfg, cfg
 
 
@@ -453,8 +454,9 @@ def make_density_interactive(
     import plotly.graph_objects as go  # noqa: PLC0415
 
     cfg = config or {}
+    plots_cfg = cfg.get("plots", {}) or {}
     _, density_cfg = (
-        (cfg, cfg.get("density", {}) or {}) if "density" in cfg else ({}, cfg)
+        (cfg, plots_cfg.get("density", {}) or {}) if "density" in plots_cfg else ({}, cfg)
     )
 
     # Per-pair overrides take precedence over global density config.
@@ -536,7 +538,7 @@ def make_density_interactive(
     )
 
     # include_plotlyjs: "cdn", True (inline), or "require"
-    interactive_cfg = cfg.get("interactive", {})
+    interactive_cfg = (cfg.get("plots", {}) or {}).get("interactive", {})
     include_plotlyjs = interactive_cfg.get("include_plotlyjs", "cdn")
     embed_xyz = bool(interactive_cfg.get("embed_xyz_payload", False))
 

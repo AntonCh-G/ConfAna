@@ -21,6 +21,7 @@ from src.cli import cli
 def _write_minimal_config(tmp_path: Path) -> Path:
     """Write a minimal config YAML that points to tmp_path for all outputs."""
     cfg = {
+        "run_dir": str(tmp_path / "outputs"),
         "data": {
             "path_pattern": str(tmp_path / "*.xyz"),
             "trajectory_id_pattern": None,
@@ -75,20 +76,33 @@ def _write_minimal_config(tmp_path: Path) -> Path:
             "dihedral_signed": True,
         },
         "cache": {
-            "index_cache_dir": None,   # store alongside xyz file (no separate dir needed)
-            "trajectory_cache_dir": str(tmp_path / "cache"),
-            "coordinate_table_path": str(tmp_path / "coords.npz"),
+            "index_cache_dir": None,
+            "trajectory_cache_dir": None,  # derived from run_dir
+            "coordinate_table_path": None,
         },
-        "density": {
-            "bins": 10,
-            "plane_bins": 10,
-            "dihedral_bins": 10,
-            "colormap": "viridis",
-            "log_scale": True,
-            "plane_x_range": [0, 180],
-            "plane_y_range": [0, 180],
-            "dihedral_x_range": [-180, 180],
-            "dihedral_y_range": [-180, 180],
+        "plots": {
+            "dpi": 72,
+            "density": {
+                "bins": 10,
+                "plane_bins": 10,
+                "dihedral_bins": 10,
+                "colormap": "viridis",
+                "log_scale": True,
+                "plane_x_range": [0, 180],
+                "plane_y_range": [0, 180],
+                "dihedral_x_range": [-180, 180],
+                "dihedral_y_range": [-180, 180],
+            },
+            "transitions": {
+                "colormap_counts": "Blues",
+                "colormap_probs": "viridis",
+                "colormap_rates": "plasma",
+                "max_annotate_states": 10,
+            },
+            "interactive": {
+                "embed_xyz_payload": False,
+                "include_plotlyjs": "cdn",
+            },
         },
         "clustering": {
             "algorithm": "dbscan",
@@ -102,20 +116,8 @@ def _write_minimal_config(tmp_path: Path) -> Path:
         "transitions": {"lag": 1, "dt": None},
         "pimd": {"enabled": False, "average_across_beads": False},
         "outputs": {
-            "dir": str(tmp_path / "outputs"),
-            "dpi": 72,
             "save_csv": True,
             "save_parquet": False,
-        },
-        "transitions_plot": {
-            "colormap_counts": "Blues",
-            "colormap_probs": "viridis",
-            "colormap_rates": "plasma",
-            "max_annotate_states": 10,
-        },
-        "interactive": {
-            "embed_xyz_payload": False,
-            "include_plotlyjs": "cdn",
         },
     }
     config_path = tmp_path / "test_config.yaml"
@@ -206,7 +208,7 @@ def test_extract_coordinates_creates_csv(tmp_path):
     result = runner.invoke(cli, ["extract-coordinates", "--config", str(config_path)])
 
     assert result.exit_code == 0, result.output
-    csv_path = tmp_path / "outputs" / "coordinates_angles.csv"
+    csv_path = tmp_path / "outputs" / "plots" / "coordinates_angles.csv"
     assert csv_path.exists(), f"CSV not found; CLI output:\n{result.output}"
 
 
@@ -225,8 +227,8 @@ def test_plot_densities_creates_extra_pair_outputs(tmp_path):
     result = runner.invoke(cli, ["plot-densities", "--config", str(config_path)])
 
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "outputs" / "density_dihedral.png").exists()
-    assert (tmp_path / "outputs" / "density_dihedrals_igor.png").exists()
+    assert (tmp_path / "outputs" / "plots" / "density_dihedral.png").exists()
+    assert (tmp_path / "outputs" / "plots" / "density_dihedrals_igor.png").exists()
 
 
 def test_build_interactive_creates_extra_pair_outputs(tmp_path):
@@ -237,5 +239,5 @@ def test_build_interactive_creates_extra_pair_outputs(tmp_path):
     result = runner.invoke(cli, ["build-interactive", "--config", str(config_path)])
 
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "outputs" / "density_dihedral.html").exists()
-    assert (tmp_path / "outputs" / "density_dihedrals_igor.html").exists()
+    assert (tmp_path / "outputs" / "plots" / "density_dihedral.html").exists()
+    assert (tmp_path / "outputs" / "plots" / "density_dihedrals_igor.html").exists()

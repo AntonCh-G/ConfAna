@@ -883,7 +883,10 @@ def load_or_build_coordinate_table_from_config(
 
     dof_defs = resolve_dof_definitions(config)
 
-    trajectory_cache_dir = cache_cfg.get("trajectory_cache_dir")
+    run_dir = config.get("run_dir")
+    trajectory_cache_dir = cache_cfg.get("trajectory_cache_dir") or (
+        str(Path(run_dir) / ".cache") if run_dir else None
+    )
     if trajectory_cache_dir:
         # Per-trajectory path: one NPZ per trajectory, supports bond-break truncation.
         df, cache_hit = load_or_build_all_coordinates(config, force_rebuild=force_rebuild_cache)
@@ -892,11 +895,12 @@ def load_or_build_coordinate_table_from_config(
 
     # Legacy: single global coordinate table cache.
     data_cfg = config.get("data", {})
-    cache_path = cache_cfg.get("coordinate_table_path")
+    cache_path = cache_cfg.get("coordinate_table_path") or (
+        str(Path(run_dir) / "coordinates_angles.npz") if run_dir else None
+    )
     if not cache_path:
         raise ValueError(
-            "cache.coordinate_table_path must be set in config to use the "
-            "automatic precomputed-angle cache."
+            "Either 'run_dir' or 'cache.coordinate_table_path' must be set in config."
         )
 
     df, cache_hit = load_or_build_coordinate_table_cache(
@@ -1101,11 +1105,13 @@ def load_or_build_all_coordinates(
     data_cfg = config.get("data", {})
     cache_cfg = config.get("cache", {})
 
-    trajectory_cache_dir = cache_cfg.get("trajectory_cache_dir")
+    run_dir = config.get("run_dir")
+    trajectory_cache_dir = cache_cfg.get("trajectory_cache_dir") or (
+        str(Path(run_dir) / ".cache") if run_dir else None
+    )
     if not trajectory_cache_dir:
         raise ValueError(
-            "cache.trajectory_cache_dir must be set in config to use "
-            "per-trajectory coordinate caching."
+            "Either 'run_dir' or 'cache.trajectory_cache_dir' must be set in config."
         )
 
     source_files = _discover_source_files(str(data_cfg["path_pattern"]))

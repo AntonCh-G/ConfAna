@@ -28,8 +28,9 @@ from src.models import CoordinatePair
 def _split_density_config(config: dict | None) -> tuple[dict, dict]:
     """Return ``(root_cfg, density_cfg)`` for full-config or density-only input."""
     cfg = config or {}
-    if "density" in cfg:
-        return cfg, cfg.get("density", {}) or {}
+    plots_cfg = cfg.get("plots", {}) or {}
+    if "density" in plots_cfg:
+        return cfg, plots_cfg.get("density", {}) or {}
     return {}, cfg
 
 
@@ -298,7 +299,7 @@ def make_density_png(
     )
 
     C = _prepare_density_values(H, log_scale=log_scale)
-    cbar_label = "log\u2081\u2080(count + 1)" if log_scale else "count"
+    cbar_label = "log₁₀(count + 1)" if log_scale else "count"
 
     fig, ax = plt.subplots(figsize=(6, 5))
     cmap = _prepare_density_colormap(colormap)
@@ -372,6 +373,7 @@ def make_density_png(
             ov_df = ov["df"]
             ov_label = ov.get("label", "")
             ov_color = ov.get("color", "white")
+            ov_size = ov.get("size") or 4
             if x_col not in ov_df.columns or y_col not in ov_df.columns:
                 warnings.warn(
                     f"Scatter overlay '{ov_label}': columns {x_col!r} / {y_col!r} "
@@ -387,12 +389,12 @@ def make_density_png(
             ax.scatter(
                 ov_x,
                 ov_y,
-                s=4,
-                alpha=0.8,
+                marker="x",
+                s=ov_size,
                 color=ov_color,
                 label=ov_label,
                 zorder=4,
-                linewidths=0,
+                linewidths=0.5,
                 rasterized=True,
             )
         ax.legend(loc="upper right", fontsize=7, markerscale=3,
@@ -493,7 +495,7 @@ def make_transition_png(
 
     pair_name = transitions.get("pair_name", transitions.get("definition", "unknown"))
 
-    tp_cfg = (config or {}).get("transitions_plot", {})
+    tp_cfg = ((config or {}).get("plots", {}) or {}).get("transitions", {})
     max_annotate: int = int(tp_cfg.get("max_annotate_states", 10))
     cmap_counts: str = str(tp_cfg.get("colormap_counts", "Blues"))
     cmap_probs: str = str(tp_cfg.get("colormap_probs", "viridis"))

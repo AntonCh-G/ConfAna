@@ -177,7 +177,7 @@ def test_make_density_interactive_supports_custom_pair(tmp_path):
         df,
         igor_pair,
         outpath,
-        config={"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}}},
     )
     content = outpath.read_text(encoding="utf-8")
     assert "igor1_dihedral" in content
@@ -218,7 +218,7 @@ def test_make_density_interactive_accepts_named_pair(tmp_path):
         df,
         igor_pair,
         outpath,
-        config={"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}}},
     )
     content = outpath.read_text(encoding="utf-8")
     assert "igor1_dihedral" in content
@@ -243,8 +243,10 @@ def test_make_density_interactive_signed_plane_range(tmp_path):
         signed_pair,
         outpath,
         config={
-            "density": {"plane_bins": 20},
-            "interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"},
+            "plots": {
+                "density": {"plane_bins": 20},
+                "interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"},
+            }
         },
     )
     content = outpath.read_text(encoding="utf-8")
@@ -260,7 +262,7 @@ def test_make_density_interactive_metadata_precedes_click_handler(tmp_path):
         df,
         _plane_pair(),
         outpath,
-        config={"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}}},
     )
 
     content = outpath.read_text(encoding="utf-8")
@@ -281,7 +283,7 @@ def test_make_density_interactive_bin_payloads_precede_click_handler(tmp_path):
         df,
         _plane_pair(),
         outpath,
-        config={"interactive": {"embed_xyz_payload": True, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": True, "include_plotlyjs": "cdn"}}},
     )
 
     content = outpath.read_text(encoding="utf-8")
@@ -304,7 +306,7 @@ def test_make_density_interactive_contains_comparison_tray(tmp_path):
         df,
         _plane_pair(),
         outpath,
-        config={"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": False, "include_plotlyjs": "cdn"}}},
     )
 
     content = outpath.read_text(encoding="utf-8")
@@ -321,7 +323,7 @@ def test_make_density_interactive_uses_multi_card_js_and_no_singleton_viewer(tmp
         df,
         _plane_pair(),
         outpath,
-        config={"interactive": {"embed_xyz_payload": True, "include_plotlyjs": "cdn"}},
+        config={"plots": {"interactive": {"embed_xyz_payload": True, "include_plotlyjs": "cdn"}}},
     )
 
     content = outpath.read_text(encoding="utf-8")
@@ -341,14 +343,16 @@ def test_make_density_interactive_metadata_only_remains_valid_with_alignment_con
         _dihedral_pair(),
         outpath,
         config={
-            "interactive": {
-                "embed_xyz_payload": False,
-                "include_plotlyjs": "cdn",
-                "alignment": {
-                    "enabled": True,
-                    "reference": "earliest_frame",
-                    "atom_selection": "heavy",
-                },
+            "plots": {
+                "interactive": {
+                    "embed_xyz_payload": False,
+                    "include_plotlyjs": "cdn",
+                    "alignment": {
+                        "enabled": True,
+                        "reference": "earliest_frame",
+                        "atom_selection": "heavy",
+                    },
+                }
             }
         },
     )

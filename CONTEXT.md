@@ -59,6 +59,21 @@ A byte-offset index built by scanning each xyz file once. Enables O(1) random ac
 
 ## Config Schema
 
+**`run_dir`** (required, top-level)
+Single root directory for all outputs and caches for a given run. Missing or null = hard validation error at startup. Derived paths:
+- plots → `{run_dir}/plots/`
+- trajectory cache → `{run_dir}/.cache/` (overridable via `cache.trajectory_cache_dir`)
+- coordinate table cache → `{run_dir}/coordinates_angles.npz` (overridable via `cache.coordinate_table_path`)
+
+**`plots:`** block
+All rendering settings in one place: `dpi`, `density`, `transitions`, `interactive`. Replaces the old scattered `density:`, `transitions_plot:`, and `interactive:` top-level keys plus `dpi` in `outputs:`.
+
+**`outputs:`**
+Retains only serialization flags: `save_csv`, `save_parquet`. No longer holds `dir` or `dpi`.
+
+**`scatter_overlays:`** (top-level list)
+Data definition for overlay datasets — which files to load and render as scatter points. Stays top-level because it is data input, not rendering settings.
+
 **`dof:` list**
 Replaces the old `dihedrals:` list and `atom_mapping:` section. Each entry defines one named scalar DoF:
 ```yaml
