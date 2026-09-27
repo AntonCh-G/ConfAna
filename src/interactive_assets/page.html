@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$html_title</title>
+<style>
+$inline_css
+</style>
+</head>
+<body>
+<script id="page-data" type="application/json">$page_data_json</script>
+<div class="ca-app">
+  <header class="ca-header">
+    <div class="ca-header-main">
+      <span id="hdr-title" class="ca-header-title"></span>
+      <span class="ca-header-stats">
+        <span id="hdr-frame-count"></span> frames &middot;
+        <span id="hdr-bin-count"></span> bins &middot;
+        <span id="hdr-scale-mode"></span>
+      </span>
+    </div>
+    <div class="ca-header-sub">
+      <span class="ca-subtitle">Coordinate-density landscape &mdash; not a potential energy surface</span>
+      <button id="theme-toggle" type="button" class="ca-btn">Theme</button>
+    </div>
+  </header>
+  <div class="ca-layout">
+    <main class="ca-map">
+$plot_fragment
+    </main>
+    <aside id="side-panel" class="ca-panel">
+      <section id="preview-3d" class="ca-preview" hidden></section>
+      <section id="preview-metadata" class="ca-preview-meta" hidden></section>
+      <section id="comparison-tray">
+        <div class="ca-tray-header">
+          <b>Pinned structures</b>
+          <button id="comparison-clear" type="button" class="ca-btn">Clear all</button>
+        </div>
+        <div id="comparison-cards" class="ca-cards"></div>
+      </section>
+    </aside>
+  </div>
+</div>
+$threedmol_tag
+<script>
+$inline_js
+</script>
+</body>
+</html>

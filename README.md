@@ -87,7 +87,7 @@ Important sections include:
 - `density`: histogram bins, ranges, and coloring
 - `clustering`: state-assignment settings
 - `transitions`: lag, optional `dt`, and optional activation-barrier settings
-- `interactive`: interactive HTML behavior
+- `interactive`: interactive HTML behavior (Plotly/3Dmol inlining, theme, alignment, XYZ payload embedding)
 - `outputs`: output directory and file settings
 
 Local configs are intentionally ignored by git because they often contain machine-specific data and output paths.
@@ -223,5 +223,10 @@ The repository includes tests for geometry, XYZ ingestion, coordinate-table load
 ## Notes
 
 - Interactive structure rendering is intended to use browser-native HTML output.
-- Standalone HTML can use Plotly from CDN or inline it, depending on config.
+- Interactive HTML is fully offline by default: Plotly and 3Dmol.js are both inlined into
+  the single output file (`include_plotlyjs: true`, `include_3dmol: inline`). Set either
+  to `cdn` to load from a CDN instead (requires internet, produces a smaller file).
+- Theme follows the browser's OS-level light/dark preference by default
+  (`interactive.theme: auto`); set to `light` or `dark` to force it, or use the in-page toggle.
+- The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
 - XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.

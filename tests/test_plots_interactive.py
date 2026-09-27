@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.models import CoordinatePair
-from src.plots_interactive import make_density_interactive
+from src.plots_interactive import make_density_interactive, render_density_page
+
+
+def _page_data(content: str) -> dict:
+    """Extract and parse the embedded ``#page-data`` JSON block from *content*."""
+    match = re.search(
+        r'<script id="page-data" type="application/json">(.*?)</script>',
+        content,
+        re.DOTALL,
+    )
+    assert match, "no #page-data script block found in content"
+    return json.loads(match.group(1))
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +120,7 @@ def test_make_density_interactive_contains_metadata_script(tmp_path):
     outpath = tmp_path / "out.html"
     make_density_interactive(df, _plane_pair(), outpath)
     content = outpath.read_text(encoding="utf-8")
-    assert 'id="frame-metadata"' in content
+    assert 'id="page-data"' in content
 
 
 def test_make_density_interactive_metadata_has_frame_fields(tmp_path):
@@ -266,12 +280,12 @@ def test_make_density_interactive_metadata_precedes_click_handler(tmp_path):
     )
 
     content = outpath.read_text(encoding="utf-8")
-    frame_meta_idx = content.find('id="frame-metadata"')
+    page_data_idx = content.find('id="page-data"')
     plotly_click_idx = content.find("plotly_click")
 
-    assert frame_meta_idx != -1
+    assert page_data_idx != -1
     assert plotly_click_idx != -1
-    assert frame_meta_idx < plotly_click_idx
+    assert page_data_idx < plotly_click_idx
 
 
 def test_make_density_interactive_bin_payloads_precede_click_handler(tmp_path):
@@ -287,15 +301,15 @@ def test_make_density_interactive_bin_payloads_precede_click_handler(tmp_path):
     )
 
     content = outpath.read_text(encoding="utf-8")
-    bin_meta_idx = content.find('id="bin-frame-metadata"')
-    bin_xyz_idx = content.find('id="bin-xyz-payloads"')
+    data = _page_data(content)
+    page_data_idx = content.find('id="page-data"')
     plotly_click_idx = content.find("plotly_click")
 
-    assert bin_meta_idx != -1
-    assert bin_xyz_idx != -1
+    assert data["bin_frame_metadata"] is not None
+    assert data["bin_xyz_payloads"] is not None
+    assert page_data_idx != -1
     assert plotly_click_idx != -1
-    assert bin_meta_idx < plotly_click_idx
-    assert bin_xyz_idx < plotly_click_idx
+    assert page_data_idx < plotly_click_idx
 
 
 def test_make_density_interactive_contains_comparison_tray(tmp_path):
@@ -358,5 +372,126 @@ def test_make_density_interactive_metadata_only_remains_valid_with_alignment_con
     )
 
     content = outpath.read_text(encoding="utf-8")
-    assert 'id="frame-metadata"' in content
-    assert "3Dmol-min.js" not in content
+    data = _page_data(content)
+    assert data["frame_metadata"] is not None
+    assert "GLViewer" not in content
+
+
+# ---------------------------------------------------------------------------
+# Slice 1: page template, theme and offline-by-default
+# ---------------------------------------------------------------------------
+
+
+def test_make_density_interactive_no_google_fonts(tmp_path):
+    df = _make_angle_df()
+    outpath = tmp_path / "out.html"
+    make_density_interactive(df, _plane_pair(), outpath)
+    content = outpath.read_text(encoding="utf-8")
+    assert "fonts.googleapis.com" not in content
+    assert "fonts.gstatic.com" not in content
+
+
+def test_make_density_interactive_theme_tokens_present(tmp_path):
+    df = _make_angle_df()
+    outpath = tmp_path / "out.html"
+    make_density_interactive(df, _plane_pair(), outpath)
+    content = outpath.read_text(encoding="utf-8")
+    assert "--ca-bg" in content
+    assert "--ca-accent" in content
+    assert "prefers-color-scheme" in content
+
+
+def test_make_density_interactive_default_output_is_fully_offline(tmp_path):
+    df = _make_angle_df()
+    outpath = tmp_path / "offline.html"
+    # embed_xyz_payload defaults to False when omitted entirely; set it
+    # explicitly so this test also exercises the vendored-3Dmol inlining,
+    # while include_plotlyjs/include_3dmol are left at their Slice-1 defaults.
+    make_density_interactive(
+        df,
+        _plane_pair(),
+        outpath,
+        config={"plots": {"interactive": {"embed_xyz_payload": True}}},
+    )
+    content = outpath.read_text(encoding="utf-8")
+    assert re.search(r'<script[^>]+src="https?://', content) is None
+    assert re.search(r'<link[^>]+href="https?://', content) is None
+    assert "Plotly.newPlot(" in content
+    assert "GLViewer" in content
+
+
+def test_make_density_interactive_include_3dmol_cdn_uses_cdn_tag(tmp_path):
+    df = _make_angle_df()
+    outpath = tmp_path / "cdn_3dmol.html"
+    make_density_interactive(
+        df,
+        _plane_pair(),
+        outpath,
+        config={
+            "plots": {
+                "interactive": {"embed_xyz_payload": True, "include_3dmol": "cdn"}
+            }
+        },
+    )
+    content = outpath.read_text(encoding="utf-8")
+    assert re.search(r'<script src="https://cdn\.jsdelivr\.net/npm/3dmol@[^"]+"></script>', content)
+    assert "GLViewer" not in content
+
+
+def test_make_density_interactive_embeds_ui_state_from_config(tmp_path):
+    df = _make_angle_df()
+    outpath = tmp_path / "theme_dark.html"
+    make_density_interactive(
+        df,
+        _plane_pair(),
+        outpath,
+        config={"plots": {"interactive": {"theme": "dark"}}},
+    )
+    content = outpath.read_text(encoding="utf-8")
+    data = _page_data(content)
+    assert data["ui_state"]["theme"] == "dark"
+
+
+def test_render_density_page_is_deterministic():
+    page_data = {
+        "schema_version": 1,
+        "pair": {"name": "plane", "x_col": "x", "y_col": "y",
+                  "x_label": "X", "y_label": "Y", "title": "Plane"},
+        "header": {"frame_count": 10, "bin_count_x": 5, "bin_count_y": 5,
+                    "scale_mode_label": "count"},
+        "axis_spec": {"x_col": "x", "y_col": "y"},
+        "bin_geometry": None,
+        "bin_frame_metadata": None,
+        "bin_xyz_payloads": None,
+        "frame_metadata": [{"frame_id": 0, "x": 1.0, "y": 2.0}],
+        "ui_state": {
+            "theme": "auto", "scale_mode": None, "state_overlay_visible": False,
+            "temperature": None, "unit": None, "pinned_bins": [],
+        },
+        "plot_html": "<div>plot</div>",
+        "include_3dmol": "inline",
+    }
+    first = render_density_page(page_data)
+    second = render_density_page(page_data)
+    assert first == second
+
+    reordered = {
+        "include_3dmol": "inline",
+        "plot_html": "<div>plot</div>",
+        "ui_state": {
+            "pinned_bins": [], "unit": None, "temperature": None,
+            "state_overlay_visible": False, "scale_mode": None, "theme": "auto",
+        },
+        "frame_metadata": [{"x": 1.0, "y": 2.0, "frame_id": 0}],
+        "bin_xyz_payloads": None,
+        "bin_frame_metadata": None,
+        "bin_geometry": None,
+        "axis_spec": {"y_col": "y", "x_col": "x"},
+        "header": {"scale_mode_label": "count", "bin_count_y": 5,
+                    "bin_count_x": 5, "frame_count": 10},
+        "pair": {"title": "Plane", "y_label": "Y", "x_label": "X",
+                  "y_col": "y", "x_col": "x", "name": "plane"},
+        "schema_version": 1,
+    }
+    third = render_density_page(reordered)
+    assert first == third

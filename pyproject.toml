@@ -32,5 +32,15 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src.interactive_assets" = [
+    "page.html",
+    "viewer.css",
+    "viewer.js",
+    "vendor/3Dmol-min.js",
+    "vendor/LICENSE-3dmol.txt",
+    "vendor/README.txt",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
