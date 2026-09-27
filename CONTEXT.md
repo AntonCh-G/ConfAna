@@ -99,10 +99,21 @@ Domain, periodicity, and labels are inherited from the referenced DoF definition
 **Scatter overlay**
 A set of xyz trajectory files from a different dataset (e.g. a training set from another level of theory) whose dihedral coordinates are computed using the same geometry code and atom mapping as the main dataset, then rendered as semi-transparent scatter points on top of a density PNG. Purpose: compare what region of dihedral space a training set covers relative to the PIMD/MD population landscape. Defined under the top-level `scatter_overlays:` config key. Applied to all coordinate pairs by default.
 
+**HDF5 trajectory**
+A PIMD trajectory stored as a single HDF5 file (``trajectory.hdf5``) with datasets:
+- `bead_positions` — `(n_frames, n_beads, n_atoms, 3)` float64 Å, one slice per PIMD bead
+- `positions` — `(n_frames, n_atoms, 3)` float64 Å, ring-polymer centroid
+- `potential` — `(n_frames,)` float64 eV
+
+Multiple independent HDF5 runs (e.g. `s0`, `s1`, …) each become one `trajectory_id`.
+All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"` … `"bead_NN"`. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`). `byte_offset` is set to `-1` (sentinel) in all HDF5-sourced rows; structure retrieval uses `source_file` + `frame_number` + `bead_id` instead.
+
+Configured via `data.format: hdf5` and `data.positions_source: bead | centroid` (default `bead`). `trajectory_id` is derived from the parent directory name of each HDF5 file.
+
 ## Architecture Notes
 
 The pipeline is layered with a data-model boundary:
-1. **Input adapters** — `io_xyz.py` (xyz files), `io_coordinates.py` (precomputed tables)
+1. **Input adapters** — `io_xyz.py` (xyz files), `io_hdf5.py` (HDF5 PIMD files), `io_coordinates.py` (precomputed tables)
 2. **Geometry / coordinate engine** — `geometry.py`, `coordinates.py`
 3. **State assignment** — `states.py`
 4. **Transition analysis** — `transitions.py`

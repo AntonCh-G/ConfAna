@@ -845,6 +845,67 @@ def load_or_build_coordinate_table_cache(
     return df, False
 
 
+def _load_or_build_hdf5_coordinate_table(
+    config: dict[str, Any],
+    dof_defs: list[DoFDefinition],
+    *,
+    force_rebuild: bool = False,
+) -> tuple[pd.DataFrame, bool]:
+    """Load or build coordinate table from HDF5 PIMD trajectories.
+
+    Uses the same NPZ cache mechanism as the xyz path. Cache is invalidated
+    when any HDF5 source file changes (size or mtime) or when DoF definitions
+    or ``positions_source`` change.
+    """
+    from src.io_hdf5 import (  # noqa: PLC0415
+        build_coordinate_table_from_hdf5_files,
+        build_hdf5_cache_metadata,
+        discover_hdf5_files,
+    )
+
+    data_cfg = config.get("data", {})
+    cache_cfg = config.get("cache", {})
+    run_dir = config.get("run_dir")
+
+    path_pattern = str(data_cfg["path_pattern"])
+    positions_source = data_cfg.get("positions_source", "bead")
+
+    cache_path_str = cache_cfg.get("coordinate_table_path") or (
+        str(Path(run_dir) / "coordinates_angles.npz") if run_dir else None
+    )
+    if not cache_path_str:
+        raise ValueError(
+            "Either 'run_dir' or 'cache.coordinate_table_path' must be set in config."
+        )
+    cache_path = Path(cache_path_str)
+    if cache_path.suffix.lower() != ".npz":
+        raise ValueError(
+            f"Coordinate-table cache must use a '.npz' path; got {cache_path!s}"
+        )
+
+    h5_paths = discover_hdf5_files(path_pattern)
+    expected_metadata = build_hdf5_cache_metadata(
+        h5_paths,
+        path_pattern=path_pattern,
+        positions_source=positions_source,
+        dof_defs=dof_defs,
+    )
+
+    if not force_rebuild and cache_path.exists():
+        cached_metadata = _read_embedded_cache_metadata(cache_path)
+        if cached_metadata == expected_metadata:
+            return load_coordinate_table(cache_path), True
+
+    df = build_coordinate_table_from_hdf5_files(
+        h5_paths,
+        dof_defs,
+        positions_source=positions_source,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_coordinate_npz(df, cache_path, cache_metadata=expected_metadata)
+    return df, False
+
+
 def _reset_state_columns(df: pd.DataFrame, config: dict[str, Any]) -> None:
     """Reset state columns for all configured coordinate pairs to NA (in-place)."""
     for _name, pair in list_coordinate_pairs(config):
@@ -882,6 +943,14 @@ def load_or_build_coordinate_table_from_config(
     cache_cfg = config.get("cache", {})
 
     dof_defs = resolve_dof_definitions(config)
+
+    data_cfg_top = config.get("data", {})
+    if data_cfg_top.get("format", "xyz").lower() == "hdf5":
+        df, cache_hit = _load_or_build_hdf5_coordinate_table(
+            config, dof_defs, force_rebuild=force_rebuild_cache
+        )
+        _reset_state_columns(df, config)
+        return df, cache_hit
 
     run_dir = config.get("run_dir")
     trajectory_cache_dir = cache_cfg.get("trajectory_cache_dir") or (
