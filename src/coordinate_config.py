@@ -344,6 +344,10 @@ def resolve_coordinate_pair(
         y_range=y_range,
         colormap=colormap,
         log_scale=log_scale,
+        x_atoms=x_dof.atoms,
+        y_atoms=y_dof.atoms,
+        x_dof_type=x_dof.type,
+        y_dof_type=y_dof.type,
     )
 
 

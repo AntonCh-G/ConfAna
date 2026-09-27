@@ -31,6 +31,10 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "bin_frame_metadata": {"<xi>_<yi>": {...}} | null,
       "bin_xyz_payloads": {"<xi>_<yi>": "<xyz text>"} | null,
       "frame_metadata": [{...}, ...] | null,
+      "axis_atoms": {                     # null when highlight_dof_atoms: false
+        "x": {"name", "type", "atoms": [int, ...] | null},
+        "y": {"name", "type", "atoms": [int, ...] | null}
+      } | null,
       "settings": {
         "hover_preview": true | false,    # live hover preview in the side panel
         "max_pinned": 15                  # pinned cards; oldest evicted beyond this
@@ -50,6 +54,12 @@ together (``embed_xyz_payload: true``) and mutually exclusive with
 ``frame_metadata`` (``embed_xyz_payload: false``); the client derives which
 mode is active from ``bin_geometry !== null``.
 
+``axis_atoms`` lists the atoms that define each axis, taken from the pair's
+DoF definitions (``CoordinatePair.x_atoms`` / ``y_atoms``). Indices are
+0-based file indices, as in config; ``name`` is the DoF column and ``type``
+the DoF type. ``atoms`` is null for DoF types without atoms (collective,
+external). The 3D views colour these atoms and the axis titles to match.
+
 Public API
 ----------
 - ``make_density_interactive``
@@ -66,6 +76,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from collections.abc import Iterable
 
 from src.density import compute_2d_histogram
 from src.models import CoordinatePair
@@ -111,12 +123,16 @@ _PLOTLY_THEME_COLORS = {
         "plot_bgcolor": "#ffffff",
         "font_color": "#1a1d21",
         "grid_color": "#d8dce1",
+        "axis_x_color": "#d55e00",
+        "axis_y_color": "#0072b2",
     },
     "dark": {
         "paper_bgcolor": "#1c2024",
         "plot_bgcolor": "#1c2024",
         "font_color": "#e7e9ec",
         "grid_color": "#33393f",
+        "axis_x_color": "#f0894a",
+        "axis_y_color": "#56b4e9",
     },
 }
 
@@ -157,16 +173,17 @@ def _resolve_interactive_config(cfg: dict) -> dict:
     Raises
     ------
     ValueError
-        If ``hover_preview`` is not a bool, or ``max_pinned`` is not an
-        integer >= 1.
+        If ``hover_preview`` or ``highlight_dof_atoms`` is not a bool, or
+        ``max_pinned`` is not an integer >= 1.
     """
     interactive_cfg = (cfg.get("plots", {}) or {}).get("interactive", {}) or {}
 
-    hover_preview = interactive_cfg.get("hover_preview", True)
-    if not isinstance(hover_preview, bool):
-        raise ValueError(
-            f"plots.interactive.hover_preview must be true or false, got {hover_preview!r}."
-        )
+    flags = {}
+    for key in ("hover_preview", "highlight_dof_atoms"):
+        value = interactive_cfg.get(key, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"plots.interactive.{key} must be true or false, got {value!r}.")
+        flags[key] = value
 
     max_pinned = interactive_cfg.get("max_pinned", 15)
     # bool is a subclass of int, so reject it explicitly.
@@ -181,7 +198,8 @@ def _resolve_interactive_config(cfg: dict) -> dict:
         "embed_xyz_payload": bool(interactive_cfg.get("embed_xyz_payload", False)),
         "theme": interactive_cfg.get("theme", "auto"),
         "alignment": interactive_cfg.get("alignment"),
-        "hover_preview": hover_preview,
+        "hover_preview": flags["hover_preview"],
+        "highlight_dof_atoms": flags["highlight_dof_atoms"],
         "max_pinned": max_pinned,
     }
 
@@ -220,6 +238,59 @@ def _build_frame_metadata_records(
                     rec[col] = val
         records.append(rec)
     return records
+
+
+def _known_atom_counts(df: pd.DataFrame, bin_xyz_payloads: dict | None) -> set[int]:
+    """Return the atom counts of the frames the page describes.
+
+    Taken from the ``atom_count`` column (absent in coordinate-only input) and
+    from the first line of each embedded XYZ payload.
+    """
+    counts: set[int] = set()
+    if "atom_count" in df.columns:
+        counts.update(int(c) for c in pd.unique(df["atom_count"].dropna()))
+    for xyz_text in (bin_xyz_payloads or {}).values():
+        counts.add(int(xyz_text.split("\n", 1)[0]))
+    return counts
+
+
+def _build_axis_atoms(pair: CoordinatePair, atom_counts: Iterable[int]) -> dict:
+    """Return the ``axis_atoms`` page-data block for *pair*.
+
+    Parameters
+    ----------
+    pair:
+        Coordinate pair; its ``x_atoms`` / ``y_atoms`` are 0-based file indices.
+    atom_counts:
+        Atom counts of the frames on the page. Every atom index must be
+        below the smallest of them. Empty when unknown (coordinate-only
+        input without structures); then only negative indices are rejected.
+
+    Raises
+    ------
+    ValueError
+        If any atom index is negative or not below the atom count.
+    """
+    n_atoms = min(atom_counts, default=None)
+    axes: dict = {}
+    for axis, name, dof_type, atoms in (
+        ("x", pair.x_col, pair.x_dof_type, pair.x_atoms),
+        ("y", pair.y_col, pair.y_dof_type, pair.y_atoms),
+    ):
+        atom_list = [int(a) for a in atoms] if atoms is not None else None
+        bad = [
+            a for a in atom_list or []
+            if a < 0 or (n_atoms is not None and a >= n_atoms)
+        ]
+        if bad:
+            limit = f"0..{n_atoms - 1}" if n_atoms is not None else ">= 0"
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': {axis}-axis DoF '{name}' uses atom "
+                f"indices {bad} outside {limit}. Atom indices are 0-based file indices"
+                + (f" and the structures have {n_atoms} atoms." if n_atoms is not None else ".")
+            )
+        axes[axis] = {"name": name, "type": dof_type, "atoms": atom_list}
+    return axes
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +387,8 @@ def make_density_interactive(
         the ``density:`` sub-section. Controls bins, axis ranges, log_scale,
         ``interactive.include_plotlyjs``, ``interactive.include_3dmol``,
         ``interactive.embed_xyz_payload``, ``interactive.theme``,
-        ``interactive.alignment``, ``interactive.hover_preview`` and
-        ``interactive.max_pinned``.
+        ``interactive.alignment``, ``interactive.hover_preview``,
+        ``interactive.highlight_dof_atoms`` and ``interactive.max_pinned``.
 
     Returns
     -------
@@ -327,8 +398,9 @@ def make_density_interactive(
     Raises
     ------
     ValueError
-        If the feature columns are not found in ``df``, or
-        ``hover_preview`` / ``max_pinned`` are invalid.
+        If the feature columns are not found in ``df``,
+        ``hover_preview`` / ``highlight_dof_atoms`` / ``max_pinned`` are
+        invalid, or an axis atom index is outside the structures' atom count.
     """
     import plotly.graph_objects as go  # noqa: PLC0415
 
@@ -408,13 +480,27 @@ def make_density_interactive(
     theme = interactive_cfg["theme"]
     plotly_theme = _PLOTLY_THEME_COLORS["dark" if theme == "dark" else "light"]
 
+    # Axis titles take the colour of their highlighted atoms in the 3D views.
+    highlight = interactive_cfg["highlight_dof_atoms"]
+    axis_titles = {}
+    for axis, label, atoms in (("x", pair.x_label, pair.x_atoms), ("y", pair.y_label, pair.y_atoms)):
+        axis_titles[axis] = {"text": label}
+        if highlight and atoms:
+            axis_titles[axis]["font"] = {"color": plotly_theme[f"axis_{axis}_color"]}
+
     fig = go.Figure(data=[heatmap])
     fig.update_layout(
         title=pair.title,
-        xaxis_title=pair.x_label,
-        yaxis_title=pair.y_label,
-        xaxis={"range": list(x_range), "gridcolor": plotly_theme["grid_color"]},
-        yaxis={"range": list(y_range), "gridcolor": plotly_theme["grid_color"]},
+        xaxis={
+            "title": axis_titles["x"],
+            "range": list(x_range),
+            "gridcolor": plotly_theme["grid_color"],
+        },
+        yaxis={
+            "title": axis_titles["y"],
+            "range": list(y_range),
+            "gridcolor": plotly_theme["grid_color"],
+        },
         width=700,
         height=600,
         paper_bgcolor=plotly_theme["paper_bgcolor"],
@@ -461,6 +547,10 @@ def make_density_interactive(
         # find the nearest frame to any click point. Practical for small datasets.
         frame_metadata = _build_frame_metadata_records(df, extra_columns=[x_col, y_col])
 
+    axis_atoms = (
+        _build_axis_atoms(pair, _known_atom_counts(df, bin_xyz_payloads)) if highlight else None
+    )
+
     page_data = {
         "schema_version": 1,
         "pair": {
@@ -482,6 +572,7 @@ def make_density_interactive(
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
         "frame_metadata": frame_metadata,
+        "axis_atoms": axis_atoms,
         "settings": {
             "hover_preview": interactive_cfg["hover_preview"],
             "max_pinned": interactive_cfg["max_pinned"],

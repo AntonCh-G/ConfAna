@@ -243,4 +243,10 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or
   double-click clears pins. At most `interactive.max_pinned` cards (default 15) are kept:
   pinning more removes the oldest.
+- Every 3D view colours the atoms that define each axis: x-axis atoms in orange, y-axis
+  atoms in blue, atoms shared by both in pink, all other atoms as grey sticks. The axis
+  titles use the same colours, and a legend in the side panel lists the atom indices
+  (0-based file indices, from the pair's `dof` entries). The build fails if an index is
+  not below the structures' atom count. Turn it off with
+  `interactive.highlight_dof_atoms: false`.
 - XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.

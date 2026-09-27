@@ -9,6 +9,9 @@
  *  - pinned cards: clicking a bin/frame opens a persistent card with its own
  *    3Dmol viewer (multi-card design; no singleton #viewer3d), capped at
  *    settings.max_pinned with the oldest card evicted
+ *  - axis-atom highlighting: the atoms defining the x and y coordinates
+ *    (page data axis_atoms) are coloured in every 3D view, matching the
+ *    axis titles, with a legend in the side panel
  *
  * Seams left for later slices (inert here): ui_state.scale_mode,
  * state_overlay_visible, temperature, unit, pinned_bins.
@@ -30,6 +33,27 @@
   var settings = pageData.settings || {};
   var maxPinned = settings.max_pinned || 15;
   var hoverPreview = settings.hover_preview !== false;
+  var axisAtoms = pageData.axis_atoms || null;
+
+  function axisAtomList(axis) {
+    return (axisAtoms && axisAtoms[axis] && axisAtoms[axis].atoms) || [];
+  }
+
+  // Atoms in both axes get their own colour, so each atom has exactly one.
+  var highlightGroups = (function () {
+    var xs = axisAtomList('x');
+    var ys = axisAtomList('y');
+    if (!xs.length && !ys.length) return null;
+    function notIn(list) {
+      return function (a) { return list.indexOf(a) === -1; };
+    }
+    var both = xs.filter(function (a) { return ys.indexOf(a) !== -1; });
+    return [
+      {name: 'x', atoms: xs.filter(notIn(both)), colorVar: '--ca-axis-x'},
+      {name: 'y', atoms: ys.filter(notIn(both)), colorVar: '--ca-axis-y'},
+      {name: 'both', atoms: both, colorVar: '--ca-axis-both'}
+    ].filter(function (g) { return g.atoms.length; });
+  })();
 
   // -------------------------------------------------------------------
   // Header
@@ -78,6 +102,12 @@
     if ((layout.font || {}).color !== fg) update['font.color'] = fg;
     if ((layout.xaxis || {}).gridcolor !== grid) update['xaxis.gridcolor'] = grid;
     if ((layout.yaxis || {}).gridcolor !== grid) update['yaxis.gridcolor'] = grid;
+    ['x', 'y'].forEach(function (axis) {
+      if (!axisAtomList(axis).length) return;
+      var color = cssVar('--ca-axis-' + axis);
+      var title = (layout[axis + 'axis'] || {}).title || {};
+      if ((title.font || {}).color !== color) update[axis + 'axis.title.font.color'] = color;
+    });
     return update;
   }
 
@@ -101,6 +131,7 @@
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
     attachedViewers().forEach(function (v) {
       v.setBackgroundColor(viewerBg);
+      styleStructure(v);
       v.render();
     });
   }
@@ -149,10 +180,35 @@
     el.appendChild(msg);
   }
 
+  // The one place that maps config atom indices to 3Dmol atoms. 3Dmol's
+  // `index` is the atom's 0-based position in its model (`serial` may come
+  // from the file), and every viewer holds a single model (showStructure
+  // clears first), so `index` equals the 0-based file index used in config.
+  function atomSelection(indices) {
+    return {index: indices};
+  }
+
+  // Neutral sticks, with each axis's atoms as coloured sphere + stick.
+  // Without axis atoms, keep 3Dmol's element-coloured sticks.
+  function styleStructure(v) {
+    if (!highlightGroups) {
+      v.setStyle({}, {stick: {}});
+      return;
+    }
+    v.setStyle({}, {stick: {color: cssVar('--ca-atom-neutral')}});
+    highlightGroups.forEach(function (group) {
+      var color = cssVar(group.colorVar);
+      v.setStyle(atomSelection(group.atoms), {
+        stick: {color: color},
+        sphere: {color: color, radius: 0.4}
+      });
+    });
+  }
+
   function showStructure(v, xyzText) {
     v.clear();
     v.addModel(xyzText, 'xyz');
-    v.setStyle({}, {stick: {}});
+    styleStructure(v);
     v.zoomTo();
     v.render();
   }
@@ -408,6 +464,8 @@
   function ensurePreviewViewer() {
     if (previewViewer || previewFailed) return previewViewer;
     previewViewer = createViewerIn(previewViewerEl);
+    // Same handle as the card boxes carry.
+    previewViewerEl._viewer3d = previewViewer;
     if (!previewViewer) {
       previewFailed = true;
       showViewerError(previewViewerEl);
@@ -461,6 +519,49 @@
       window.requestAnimationFrame(processHover);
     }
   }
+
+  // -------------------------------------------------------------------
+  // Axis-atom legend
+  // -------------------------------------------------------------------
+  var legendEl = document.getElementById('axis-legend');
+
+  function renderAxisLegend() {
+    if (!legendEl || !highlightGroups || !hasStructures) return;
+    // Axis rows list the full DoF atoms in definition order, to compare with
+    // config; the shared row lists only the atoms drawn in the third colour.
+    var rows = [
+      {name: 'x', label: pairInfo.x_label || axisSpec.x_col, atoms: axisAtomList('x')},
+      {name: 'y', label: pairInfo.y_label || axisSpec.y_col, atoms: axisAtomList('y')}
+    ];
+    highlightGroups.forEach(function (group) {
+      if (group.name === 'both') rows.push({name: 'both', label: 'Both axes', atoms: group.atoms});
+    });
+    rows.forEach(function (entry) {
+      if (!entry.atoms.length) return;
+      var row = document.createElement('div');
+      row.className = 'ca-legend-row';
+      row.dataset.group = entry.name;
+      var swatch = document.createElement('span');
+      swatch.className = 'ca-legend-swatch';
+      swatch.style.background = 'var(--ca-axis-' + entry.name + ')';
+      var label = document.createElement('span');
+      label.textContent = entry.label;
+      var atoms = document.createElement('span');
+      atoms.className = 'ca-legend-atoms';
+      atoms.textContent = 'atoms ' + entry.atoms.join(', ');
+      row.appendChild(swatch);
+      row.appendChild(label);
+      row.appendChild(atoms);
+      legendEl.appendChild(row);
+    });
+    var note = document.createElement('div');
+    note.className = 'ca-legend-note';
+    note.textContent = '0-based atom indices in the xyz file';
+    legendEl.appendChild(note);
+    legendEl.hidden = false;
+  }
+
+  renderAxisLegend();
 
   // Un-hide before any viewer is created, so 3Dmol measures a visible box.
   if (hoverPreview) {

@@ -665,3 +665,87 @@ def test_render_density_page_rejects_asset_that_closes_its_element(monkeypatch):
     )
     with pytest.raises(ValueError, match="viewer.js"):
         render_density_page(_minimal_page_data())
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: coordinate-defining atoms
+# ---------------------------------------------------------------------------
+
+
+def _atom_pair(x_atoms=(6, 5, 10, 7), y_atoms=(5, 6, 12, 11)) -> CoordinatePair:
+    return CoordinatePair(
+        name="dihedral",
+        x_col="carboxyl_dihedral",
+        y_col="ester_dihedral",
+        x_label="Carboxyl dihedral (°)",
+        y_label="Ester dihedral (°)",
+        title="Dihedral density",
+        x_domain=(-180.0, 180.0),
+        y_domain=(-180.0, 180.0),
+        periodic=True,
+        x_atoms=x_atoms,
+        y_atoms=y_atoms,
+        x_dof_type="dihedral",
+        y_dof_type="dihedral",
+    )
+
+
+def test_make_density_interactive_embeds_axis_atoms_from_pair(tmp_path):
+    outpath = tmp_path / "axis_atoms.html"
+    make_density_interactive(_make_angle_df(), _atom_pair(), outpath)
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["axis_atoms"] == {
+        "x": {"name": "carboxyl_dihedral", "type": "dihedral", "atoms": [6, 5, 10, 7]},
+        "y": {"name": "ester_dihedral", "type": "dihedral", "atoms": [5, 6, 12, 11]},
+    }
+
+
+def test_make_density_interactive_axis_atoms_null_for_dof_without_atoms(tmp_path):
+    outpath = tmp_path / "axis_atoms_none.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath)
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["axis_atoms"]["x"]["atoms"] is None
+    assert data["axis_atoms"]["y"]["atoms"] is None
+
+
+@pytest.mark.parametrize(
+    ("x_atoms", "bad"),
+    [((6, 5, 10, 21), "[21]"), ((6, 5, 10, 30), "[30]"), ((-1, 5, 10, 7), "[-1]")],
+)
+def test_make_density_interactive_out_of_range_axis_atom_raises(tmp_path, x_atoms, bad):
+    # _make_angle_df frames have 21 atoms, so valid indices are 0..20.
+    with pytest.raises(ValueError, match=rf"x-axis DoF 'carboxyl_dihedral'.*{re.escape(bad)}"):
+        make_density_interactive(
+            _make_angle_df(), _atom_pair(x_atoms=x_atoms), tmp_path / "bad.html"
+        )
+
+
+def test_make_density_interactive_checks_axis_atoms_against_smallest_atom_count(tmp_path):
+    df = _make_angle_df()
+    df.loc[0, "atom_count"] = 12
+    with pytest.raises(ValueError, match=r"y-axis DoF 'ester_dihedral'.*\[12\].*12 atoms"):
+        make_density_interactive(df, _atom_pair(), tmp_path / "bad.html")
+
+
+def test_make_density_interactive_highlight_disabled_omits_axis_atoms(tmp_path):
+    outpath = tmp_path / "no_highlight.html"
+    # Out-of-range atoms are not checked when nothing is highlighted.
+    make_density_interactive(
+        _make_angle_df(),
+        _atom_pair(x_atoms=(6, 5, 10, 99)),
+        outpath,
+        config=_interactive_cfg(highlight_dof_atoms=False),
+    )
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["axis_atoms"] is None
+
+
+@pytest.mark.parametrize("value", ["no", 0])
+def test_make_density_interactive_invalid_highlight_dof_atoms_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="highlight_dof_atoms"):
+        make_density_interactive(
+            _make_angle_df(),
+            _atom_pair(),
+            tmp_path / "bad.html",
+            config=_interactive_cfg(highlight_dof_atoms=value),
+        )

@@ -140,6 +140,18 @@ def test_resolve_coordinate_pair_inherits_domain_from_dof():
     assert pair.y_domain == (-180.0, 180.0)
 
 
+def test_resolve_coordinate_pair_copies_dof_atoms_and_types():
+    cfg = _multi_dof_config()
+    dof_defs = resolve_dof_definitions(cfg, include_disabled=True)
+    dof_map = {d.name: d for d in dof_defs}
+    pair_cfg = {"name": "dihedral", "x": "carboxyl_dihedral", "y": "ester_dihedral"}
+    pair = resolve_coordinate_pair(pair_cfg, dof_map, cfg)
+    assert pair.x_atoms == (6, 5, 10, 7)
+    assert pair.y_atoms == (5, 6, 12, 11)
+    assert pair.x_dof_type == "dihedral"
+    assert pair.y_dof_type == "dihedral"
+
+
 def test_resolve_coordinate_pair_unknown_dof_raises():
     cfg = _multi_dof_config()
     dof_defs = resolve_dof_definitions(cfg, include_disabled=True)

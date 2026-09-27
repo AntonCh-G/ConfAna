@@ -343,3 +343,49 @@ def test_build_bin_xyz_payloads_alignment_uses_earliest_reference(tmp_path):
 
     _, aligned_coords = _parse_xyz_symbols_coords(payloads["1_1"])
     assert _rmsd(aligned_coords, reference_coords) < 1e-6
+
+
+def test_build_bin_xyz_payloads_alignment_keeps_atom_order(tmp_path):
+    """Alignment must not reorder atoms: the page highlights atoms by file index.
+
+    Hydrogens sit between heavy atoms, so fitting on the heavy-atom subset
+    would expose any reordering in the written payload.
+    """
+    symbols = ["C", "H", "O", "H", "N", "C"]
+    rng = np.random.default_rng(3)
+    reference_coords = rng.normal(0.0, 1.0, (len(symbols), 3))
+    rotation = np.asarray([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    target_coords = reference_coords @ rotation.T + np.asarray([1.0, 2.0, 3.0])
+
+    xyz_file = tmp_path / "traj.xyz"
+    offsets = _write_xyz(
+        xyz_file,
+        [
+            _xyz_text_from_symbols_coords(symbols, reference_coords, comment="ref").strip().splitlines(),
+            _xyz_text_from_symbols_coords(symbols, target_coords, comment="target").strip().splitlines(),
+        ],
+    )
+    df = pd.DataFrame(
+        {
+            "carboxyl_plane": [10.0, 100.0],
+            "ester_plane": [10.0, 100.0],
+            "source_file": [str(xyz_file), str(xyz_file)],
+            "byte_offset": offsets,
+            "atom_count": [len(symbols), len(symbols)],
+        }
+    )
+    edges = np.asarray([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
+
+    payloads = build_bin_xyz_payloads(
+        df,
+        "carboxyl_plane",
+        "ester_plane",
+        edges,
+        edges,
+        alignment={"enabled": True, "reference": "earliest_frame", "atom_selection": "heavy"},
+    )
+
+    aligned_symbols, aligned_coords = _parse_xyz_symbols_coords(payloads["1_1"])
+    assert aligned_symbols == symbols
+    # Atom i of the payload is atom i of the file, just moved rigidly.
+    np.testing.assert_allclose(aligned_coords, reference_coords, atol=1e-6)

@@ -250,6 +250,16 @@ class CoordinatePair:
     colormap: Optional[str] = None
     log_scale: Optional[bool] = None
 
+    # Atoms defining each axis, copied from the referenced DoFDefinitions so
+    # plotting code can highlight them without reading config.  0-based file
+    # indices; None when the DoF has no atoms (collective / external types).
+    x_atoms: Optional[tuple[int, ...]] = None
+    y_atoms: Optional[tuple[int, ...]] = None
+    x_dof_type: Optional[str] = None
+    """DoF type of the x axis (e.g. 'dihedral'); None when not built from a DoF."""
+    y_dof_type: Optional[str] = None
+    """DoF type of the y axis (e.g. 'dihedral'); None when not built from a DoF."""
+
     @property
     def feature_columns(self) -> list[str]:
         """Return the effective feature columns used for clustering / transition analysis."""

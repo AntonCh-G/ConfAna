@@ -28,6 +28,11 @@ pytestmark = pytest.mark.browser
 
 _WELLS = [(-120.0, 60.0), (60.0, -150.0), (150.0, 150.0), (-30.0, -60.0)]
 _MAX_PINNED = 3
+# Distinct elements, so the tests can tell which file atom 3Dmol styled.
+_ELEMENTS = ["O", "C", "N", "S", "P"]
+# x-only atom 0, shared atom 1, y-only atom 2, neutral atoms 3 and 4.
+_X_ATOMS = (0, 1)
+_Y_ATOMS = (1, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +44,9 @@ def _wrap(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
 
 
-def _write_trajectory(path: Path, n_frames: int = 240) -> pd.DataFrame:
+def _write_trajectory(
+    path: Path, n_frames: int = 240, elements: list[str] | None = None
+) -> pd.DataFrame:
     """Write a 5-atom xyz trajectory and return its coordinate table.
 
     The dihedral values come from four Gaussian wells, so the map has many
@@ -48,6 +55,7 @@ def _write_trajectory(path: Path, n_frames: int = 240) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     chain = np.array([[0.0, 1.4, 0.0], [0.0, 0.0, 0.0], [1.5, 0.0, 0.0],
                       [2.0, 1.4, 0.3], [3.5, 1.4, 0.3]])
+    elements = elements or ["C"] * len(chain)
     rows = []
     with open(path, "wb") as fh:
         for i in range(n_frames):
@@ -55,7 +63,7 @@ def _write_trajectory(path: Path, n_frames: int = 240) -> pd.DataFrame:
             coords = chain + rng.normal(0.0, 0.05, chain.shape)
             offset = fh.tell()
             lines = [f"{len(coords)}", f"frame {i}"]
-            lines += [f"C {x:.5f} {y:.5f} {z:.5f}" for x, y, z in coords]
+            lines += [f"{el} {x:.5f} {y:.5f} {z:.5f}" for el, (x, y, z) in zip(elements, coords)]
             fh.write(("\n".join(lines) + "\n").encode("utf-8"))
             rows.append({
                 "frame_id": i,
@@ -74,7 +82,7 @@ def _write_trajectory(path: Path, n_frames: int = 240) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _pair() -> CoordinatePair:
+def _pair(**atoms) -> CoordinatePair:
     return CoordinatePair(
         name="dihedral",
         x_col="carboxyl_dihedral",
@@ -86,6 +94,7 @@ def _pair() -> CoordinatePair:
         y_domain=(-180.0, 180.0),
         periodic=True,
         bins=12,
+        **atoms,
     )
 
 
@@ -103,6 +112,12 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         out[name] = make_density_interactive(
             df, _pair(), root / f"{name}.html", config={"plots": {"interactive": interactive}}
         )
+    out["highlight"] = make_density_interactive(
+        _write_trajectory(root / "traj_elements.xyz", elements=_ELEMENTS),
+        _pair(x_atoms=_X_ATOMS, y_atoms=_Y_ATOMS, x_dof_type="distance", y_dof_type="distance"),
+        root / "highlight.html",
+        config={"plots": {"interactive": {"embed_xyz_payload": True}}},
+    )
     return out
 
 
@@ -213,6 +228,35 @@ class _Page:
 
     def card_count_is(self, n: int) -> None:
         self.wait_until(f"document.getElementById('comparison-cards').children.length === {n}")
+
+    def css_var(self, name: str) -> str:
+        return self.page.evaluate(
+            f"getComputedStyle(document.documentElement).getPropertyValue('{name}').trim()"
+        )
+
+    def atom_styles(self, selector: str) -> list[dict]:
+        """Element and stick/sphere colour of each atom in the 3Dmol viewer at *selector*."""
+        return self.page.evaluate(
+            """(selector) => {
+              const v = document.querySelector(selector)._viewer3d;
+              return v.getModel().selectedAtoms({}).map((a) => ({
+                index: a.index,
+                elem: a.elem,
+                stick: a.style.stick ? String(a.style.stick.color) : null,
+                sphere: a.style.sphere ? String(a.style.sphere.color) : null,
+              }));
+            }""",
+            selector,
+        )
+
+    def axis_title_colors(self) -> dict:
+        return self.page.evaluate(
+            """() => {
+              const l = document.getElementsByClassName('plotly-graph-div')[0].layout;
+              const c = (ax) => ((l[ax].title || {}).font || {}).color || null;
+              return {x: c('xaxis'), y: c('yaxis')};
+            }"""
+        )
 
 
 @pytest.fixture
@@ -326,8 +370,9 @@ def test_theme_toggle_recolours_plot(open_page, pages):
     assert state["paper"] == "#1c2024"
 
 
-def test_idle_page_does_not_redraw(open_page, pages):
-    page = open_page(pages["bin"])
+@pytest.mark.parametrize("variant", ["bin", "highlight"])
+def test_idle_page_does_not_redraw(open_page, pages, variant):
+    page = open_page(pages[variant])
     redraws = page.page.evaluate(
         """() => new Promise((resolve) => {
           const gd = document.getElementsByClassName('plotly-graph-div')[0];
@@ -371,3 +416,91 @@ def test_cdn_3dmol_offline_shows_fallback(open_page, pages):
     state = page.state()
     assert "3D viewer could not load" in state["previewText"]
     assert state["status"] == f"Bin {first['key']}"
+
+
+# ---------------------------------------------------------------------------
+# Axis-atom highlighting
+# ---------------------------------------------------------------------------
+
+
+def _expected_atom_colors(page: _Page) -> list[tuple[str | None, str]]:
+    """(sphere colour, stick colour) per atom for _X_ATOMS / _Y_ATOMS."""
+    x, y, both = (page.css_var(f"--ca-axis-{g}") for g in ("x", "y", "both"))
+    neutral = page.css_var("--ca-atom-neutral")
+    return [(x, x), (both, both), (y, y), (None, neutral), (None, neutral)]
+
+
+def _atom_colors(styles: list[dict]) -> list[tuple[str | None, str]]:
+    return [(a["sphere"], a["stick"]) for a in styles]
+
+
+def test_axis_atoms_highlighted_by_file_index_in_preview(open_page, pages):
+    page = open_page(pages["highlight"])
+    first = page.bins()["full"][0]
+    page.hover(first)
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
+
+    styles = page.atom_styles("#preview-viewer")
+    # 3Dmol's index is the file order: atom i carries element i of the xyz file.
+    assert [a["index"] for a in styles] == list(range(len(_ELEMENTS)))
+    assert [a["elem"] for a in styles] == _ELEMENTS
+    assert _atom_colors(styles) == _expected_atom_colors(page)
+    assert page.errors == []
+
+
+def test_axis_atoms_highlighted_in_pinned_card(open_page, pages):
+    page = open_page(pages["highlight"])
+    page.click(page.bins()["full"][0])
+    page.card_count_is(1)
+    styles = page.atom_styles("#comparison-cards .comparison-viewer")
+    assert [a["elem"] for a in styles] == _ELEMENTS
+    assert _atom_colors(styles) == _expected_atom_colors(page)
+
+
+def test_axis_titles_and_legend_use_highlight_colours(open_page, pages):
+    page = open_page(pages["highlight"])
+    assert page.axis_title_colors() == {
+        "x": page.css_var("--ca-axis-x"),
+        "y": page.css_var("--ca-axis-y"),
+    }
+    legend = page.page.evaluate(
+        """() => {
+          const el = document.getElementById('axis-legend');
+          return {hidden: el.hidden,
+                  rows: [...el.querySelectorAll('.ca-legend-row')]
+                    .map((r) => [r.dataset.group, r.textContent])};
+        }"""
+    )
+    assert legend["hidden"] is False
+    assert legend["rows"] == [
+        ["x", "Carboxyl dihedral (°)atoms 0, 1"],
+        ["y", "Ester dihedral (°)atoms 1, 2"],
+        ["both", "Both axesatoms 1"],
+    ]
+
+
+def test_theme_toggle_recolours_highlighted_atoms(open_page, pages):
+    page = open_page(pages["highlight"])
+    page.page.evaluate("document.documentElement.dataset.theme = 'light'")
+    first = page.bins()["full"][0]
+    page.hover(first)
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
+    light_x = page.css_var("--ca-axis-x")
+
+    page.page.click("#theme-toggle")
+    page.wait_until("document.documentElement.dataset.theme === 'dark'")
+    dark_x = page.css_var("--ca-axis-x")
+    assert dark_x != light_x
+    assert page.atom_styles("#preview-viewer")[0]["sphere"] == dark_x
+    assert page.axis_title_colors()["x"] == dark_x
+
+
+def test_page_without_axis_atoms_keeps_element_colours(open_page, pages):
+    page = open_page(pages["bin"])
+    first = page.bins()["full"][0]
+    page.hover(first)
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
+    styles = page.atom_styles("#preview-viewer")
+    assert all(a["sphere"] is None and a["stick"] in ("None", "undefined") for a in styles)
+    assert page.axis_title_colors() == {"x": None, "y": None}
+    assert page.page.evaluate("document.getElementById('axis-legend').hidden") is True
