@@ -61,15 +61,26 @@
     return parseInt(String(hex).replace('#', ''), 16);
   }
 
+  // Only the colours that differ from gd.layout: Plotly.relayout never
+  // compares values and always forces a full redraw.
+  function plotThemeUpdate() {
+    var bg = cssVar('--ca-plot-bg');
+    var fg = cssVar('--ca-plot-fg');
+    var grid = cssVar('--ca-plot-grid');
+    var layout = gd.layout || {};
+    var update = {};
+    if (layout.paper_bgcolor !== bg) update.paper_bgcolor = bg;
+    if (layout.plot_bgcolor !== bg) update.plot_bgcolor = bg;
+    if ((layout.font || {}).color !== fg) update['font.color'] = fg;
+    if ((layout.xaxis || {}).gridcolor !== grid) update['xaxis.gridcolor'] = grid;
+    if ((layout.yaxis || {}).gridcolor !== grid) update['yaxis.gridcolor'] = grid;
+    return update;
+  }
+
   function applyTheme() {
     if (gd && window.Plotly) {
-      Plotly.relayout(gd, {
-        paper_bgcolor: cssVar('--ca-plot-bg'),
-        plot_bgcolor: cssVar('--ca-plot-bg'),
-        'font.color': cssVar('--ca-plot-fg'),
-        'xaxis.gridcolor': cssVar('--ca-plot-grid'),
-        'yaxis.gridcolor': cssVar('--ca-plot-grid')
-      });
+      var update = plotThemeUpdate();
+      if (Object.keys(update).length) Plotly.relayout(gd, update);
     }
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
     Object.keys(openCards).forEach(function (key) {
@@ -92,6 +103,11 @@
       root.dataset.theme = current === 'dark' ? 'light' : 'dark';
       applyTheme();
     });
+  }
+
+  if (window.matchMedia) {
+    var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    if (darkQuery.addEventListener) darkQuery.addEventListener('change', applyTheme);
   }
 
   // -------------------------------------------------------------------
@@ -257,9 +273,10 @@
   // Plotly click handling
   // -------------------------------------------------------------------
   // gd.on(...) is Plotly's own pub/sub attached to the graph div (not a
-  // native DOM event); it is available synchronously as soon as the plot
-  // fragment's own <script>Plotly.newPlot(...)</script> (emitted just
-  // before this script tag) has run.
+  // native DOM event); it is available synchronously once the plot
+  // fragment's Plotly.newPlot(...) call, emitted just before this script,
+  // has run. (Never write a closing script tag in this file, even in a
+  // comment: this file is inlined, and the browser would end it there.)
   var gd = document.getElementsByClassName('plotly-graph-div')[0];
 
   if (gd) {
@@ -314,8 +331,6 @@
     gd.on('plotly_doubleclick', function () {
       clearAllCards();
     });
-
-    gd.on('plotly_afterplot', applyTheme);
   }
 
   applyTheme();

@@ -122,6 +122,26 @@ def _load_asset(name: str) -> str:
     return importlib.resources.files(_ASSETS_PACKAGE).joinpath(name).read_text(encoding="utf-8")
 
 
+def _inline_asset(name: str, element: str) -> str:
+    """Load a bundled asset to be inlined inside a ``<script>`` or ``<style>`` element.
+
+    Browsers end the element at the first closing tag, even inside a JS
+    comment or string, so such an asset would silently cut the page's code off.
+
+    Raises
+    ------
+    ValueError
+        If the asset contains ``</script`` / ``</style`` (matching *element*).
+    """
+    text = _load_asset(name)
+    if f"</{element}" in text.lower():
+        raise ValueError(
+            f"Bundled asset {name} contains '</{element}', which would end its inline "
+            f"<{element}> element early; remove it from the file."
+        )
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -199,13 +219,17 @@ def render_density_page(page_data: dict) -> str:
     """
     reserved = {"plot_html", "include_3dmol"}
     state = {k: v for k, v in page_data.items() if k not in reserved}
-    page_data_json = json.dumps(state, sort_keys=True, allow_nan=False, default=str)
+    # "<" only occurs inside JSON strings, so escaping it keeps the JSON valid and
+    # stops data such as an xyz comment line from closing the <script> element.
+    page_data_json = json.dumps(state, sort_keys=True, allow_nan=False, default=str).replace(
+        "<", "\\u003c"
+    )
 
     threedmol_tag = ""
     if state.get("bin_geometry") is not None:
         include_3dmol = page_data.get("include_3dmol", "inline")
         if include_3dmol == "inline":
-            threedmol_tag = f"<script>{_load_asset('vendor/3Dmol-min.js')}</script>"
+            threedmol_tag = f"<script>{_inline_asset('vendor/3Dmol-min.js', 'script')}</script>"
         elif include_3dmol == "cdn":
             threedmol_tag = f'<script src="{_VENDORED_3DMOL_CDN_URL}"></script>'
         else:
@@ -220,8 +244,8 @@ def render_density_page(page_data: dict) -> str:
         page_data_json=page_data_json,
         plot_fragment=page_data.get("plot_html", ""),
         threedmol_tag=threedmol_tag,
-        inline_css=_load_asset("viewer.css"),
-        inline_js=_load_asset("viewer.js"),
+        inline_css=_inline_asset("viewer.css", "style"),
+        inline_js=_inline_asset("viewer.js", "script"),
     )
 
 

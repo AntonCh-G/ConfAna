@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import re
+from html.parser import HTMLParser
 
 import numpy as np
 import pandas as pd
@@ -11,6 +13,44 @@ import pytest
 
 from src.models import CoordinatePair
 from src.plots_interactive import make_density_interactive, render_density_page
+
+
+class _ScriptCollector(HTMLParser):
+    """Collect <script> elements the way a browser splits them.
+
+    Like a browser, HTMLParser ends a script at the first ``</script``, even
+    inside a JS comment or string.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.scripts: list[tuple[dict, str]] = []
+        self._current: tuple[dict, list[str]] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self._current = (dict(attrs), [])
+
+    def handle_data(self, data):
+        if self._current is not None:
+            self._current[1].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self._current is not None:
+            self.scripts.append((self._current[0], "".join(self._current[1])))
+            self._current = None
+
+
+def _scripts(content: str) -> list[tuple[dict, str]]:
+    collector = _ScriptCollector()
+    collector.feed(content)
+    return collector.scripts
+
+
+def _asset_text(name: str) -> str:
+    return importlib.resources.files("src.interactive_assets").joinpath(name).read_text(
+        encoding="utf-8"
+    )
 
 
 def _page_data(content: str) -> dict:
@@ -495,3 +535,64 @@ def test_render_density_page_is_deterministic():
     }
     third = render_density_page(reordered)
     assert first == third
+
+
+def _interactive_cfg(**interactive) -> dict:
+    return {"plots": {"interactive": interactive}}
+
+
+# ---------------------------------------------------------------------------
+# Inline content must not end its <script>/<style> element early
+# ---------------------------------------------------------------------------
+
+
+def _minimal_page_data(frame_metadata: list[dict] | None = None) -> dict:
+    return {
+        "schema_version": 1,
+        "pair": {"name": "plane", "x_col": "x", "y_col": "y",
+                  "x_label": "X", "y_label": "Y", "title": "Plane"},
+        "header": {"frame_count": 1, "bin_count_x": 1, "bin_count_y": 1,
+                    "scale_mode_label": "count"},
+        "axis_spec": {"x_col": "x", "y_col": "y"},
+        "bin_geometry": None,
+        "bin_frame_metadata": None,
+        "bin_xyz_payloads": None,
+        "frame_metadata": frame_metadata or [{"frame_id": 0, "x": 1.0, "y": 2.0}],
+        "ui_state": {"theme": "auto"},
+        "plot_html": "<div>plot</div>",
+        "include_3dmol": "inline",
+    }
+
+
+def test_rendered_page_inline_scripts_are_complete(tmp_path):
+    outpath = tmp_path / "scripts.html"
+    make_density_interactive(
+        _make_angle_df(),
+        _plane_pair(),
+        outpath,
+        config=_interactive_cfg(embed_xyz_payload=True, include_plotlyjs="cdn"),
+    )
+    inline = [text.strip() for attrs, text in _scripts(outpath.read_text(encoding="utf-8"))
+              if "src" not in attrs]
+    assert _asset_text("viewer.js").strip() in inline
+    assert _asset_text("vendor/3Dmol-min.js").strip() in inline
+
+
+def test_render_density_page_page_data_survives_script_close_text():
+    comment = "</script><b>not markup</b>"
+    html = render_density_page(_minimal_page_data([{"frame_id": 0, "comment_line": comment}]))
+    blob = next(text for attrs, text in _scripts(html) if attrs.get("id") == "page-data")
+    assert json.loads(blob)["frame_metadata"][0]["comment_line"] == comment
+
+
+def test_render_density_page_rejects_asset_that_closes_its_element(monkeypatch):
+    import src.plots_interactive as plots_interactive
+
+    real_load = plots_interactive._load_asset
+    monkeypatch.setattr(
+        plots_interactive,
+        "_load_asset",
+        lambda name: "// see </script>\n" if name == "viewer.js" else real_load(name),
+    )
+    with pytest.raises(ValueError, match="viewer.js"):
+        render_density_page(_minimal_page_data())

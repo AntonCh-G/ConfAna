@@ -1,12 +1,32 @@
-"""Tests for the bundled src/interactive_assets package (Slice 1)."""
+"""Tests for the bundled src/interactive_assets package."""
 
 from __future__ import annotations
 
 import importlib.resources
+import shutil
+import subprocess
+
+import pytest
 
 
 def _assets():
     return importlib.resources.files("src.interactive_assets")
+
+
+def test_viewer_js_does_not_relayout_on_afterplot():
+    # Plotly.relayout always forces a full redraw that re-emits plotly_afterplot,
+    # so an afterplot -> relayout handler loops forever.
+    text = _assets().joinpath("viewer.js").read_text(encoding="utf-8")
+    assert "plotly_afterplot" not in text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_js_parses_with_node():
+    with importlib.resources.as_file(_assets().joinpath("viewer.js")) as path:
+        result = subprocess.run(
+            ["node", "--check", str(path)], capture_output=True, text=True
+        )
+    assert result.returncode == 0, result.stderr
 
 
 def test_vendored_3dmol_is_packaged():
