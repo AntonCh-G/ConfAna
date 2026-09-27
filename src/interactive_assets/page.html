@@ -30,8 +30,15 @@ $inline_css
 $plot_fragment
     </main>
     <aside id="side-panel" class="ca-panel">
-      <section id="preview-3d" class="ca-preview" hidden></section>
-      <section id="preview-metadata" class="ca-preview-meta" hidden></section>
+      <section id="preview-3d" class="ca-preview" hidden>
+        <div id="preview-viewer" class="ca-preview-viewer"></div>
+      </section>
+      <section id="preview-metadata" class="ca-preview-meta" hidden>
+        <div id="preview-status" class="ca-preview-status">Hover over the map to preview a bin</div>
+        <div id="preview-readout" class="ca-readout"></div>
+        <div id="preview-meta" class="ca-card-meta"></div>
+      </section>
+      <div id="panel-notice" class="ca-notice" role="status" aria-live="polite" hidden></div>
       <section id="comparison-tray">
         <div class="ca-tray-header">
           <b>Pinned structures</b>

@@ -220,6 +220,16 @@ pytest
 
 The repository includes tests for geometry, XYZ ingestion, coordinate-table loading, clustering, transitions, caching, viewer helpers, and interactive plot generation.
 
+`tests/test_interactive_browser.py` opens generated HTML pages in headless Chromium,
+offline, and drives them with real mouse and keyboard input (hover preview, pinning,
+double-click, Esc, theme toggle). It needs a one-off browser install:
+
+```bash
+python -m playwright install chromium --no-shell
+```
+
+Without it these tests are skipped. To skip them explicitly: `pytest -m "not browser"`.
+
 ## Notes
 
 - Interactive structure rendering is intended to use browser-native HTML output.
@@ -229,4 +239,8 @@ The repository includes tests for geometry, XYZ ingestion, coordinate-table load
 - Theme follows the browser's OS-level light/dark preference by default
   (`interactive.theme: auto`); set to `light` or `dark` to force it, or use the in-page toggle.
 - The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
+- Hovering the map previews the bin under the cursor in the side panel
+  (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or
+  double-click clears pins. At most `interactive.max_pinned` cards (default 15) are kept:
+  pinning more removes the oldest.
 - XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.

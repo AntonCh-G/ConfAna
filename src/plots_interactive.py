@@ -31,6 +31,10 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "bin_frame_metadata": {"<xi>_<yi>": {...}} | null,
       "bin_xyz_payloads": {"<xi>_<yi>": "<xyz text>"} | null,
       "frame_metadata": [{...}, ...] | null,
+      "settings": {
+        "hover_preview": true | false,    # live hover preview in the side panel
+        "max_pinned": 15                  # pinned cards; oldest evicted beyond this
+      },
       "ui_state": {
         "theme": "auto" | "light" | "dark",
         "scale_mode": null,               # seam for Slice 4
@@ -148,14 +152,37 @@ def _inline_asset(name: str, element: str) -> str:
 
 
 def _resolve_interactive_config(cfg: dict) -> dict:
-    """Return ``plots.interactive`` settings with Slice-1 defaults applied."""
+    """Return ``plots.interactive`` settings with defaults applied.
+
+    Raises
+    ------
+    ValueError
+        If ``hover_preview`` is not a bool, or ``max_pinned`` is not an
+        integer >= 1.
+    """
     interactive_cfg = (cfg.get("plots", {}) or {}).get("interactive", {}) or {}
+
+    hover_preview = interactive_cfg.get("hover_preview", True)
+    if not isinstance(hover_preview, bool):
+        raise ValueError(
+            f"plots.interactive.hover_preview must be true or false, got {hover_preview!r}."
+        )
+
+    max_pinned = interactive_cfg.get("max_pinned", 15)
+    # bool is a subclass of int, so reject it explicitly.
+    if isinstance(max_pinned, bool) or not isinstance(max_pinned, int) or max_pinned < 1:
+        raise ValueError(
+            f"plots.interactive.max_pinned must be an integer >= 1, got {max_pinned!r}."
+        )
+
     return {
         "include_plotlyjs": interactive_cfg.get("include_plotlyjs", True),
         "include_3dmol": interactive_cfg.get("include_3dmol", "inline"),
         "embed_xyz_payload": bool(interactive_cfg.get("embed_xyz_payload", False)),
         "theme": interactive_cfg.get("theme", "auto"),
         "alignment": interactive_cfg.get("alignment"),
+        "hover_preview": hover_preview,
+        "max_pinned": max_pinned,
     }
 
 
@@ -288,8 +315,9 @@ def make_density_interactive(
         Optional config dict. Accepts either the full project config or just
         the ``density:`` sub-section. Controls bins, axis ranges, log_scale,
         ``interactive.include_plotlyjs``, ``interactive.include_3dmol``,
-        ``interactive.embed_xyz_payload``, ``interactive.theme``, and
-        ``interactive.alignment``.
+        ``interactive.embed_xyz_payload``, ``interactive.theme``,
+        ``interactive.alignment``, ``interactive.hover_preview`` and
+        ``interactive.max_pinned``.
 
     Returns
     -------
@@ -299,11 +327,13 @@ def make_density_interactive(
     Raises
     ------
     ValueError
-        If the feature columns are not found in ``df``.
+        If the feature columns are not found in ``df``, or
+        ``hover_preview`` / ``max_pinned`` are invalid.
     """
     import plotly.graph_objects as go  # noqa: PLC0415
 
     cfg = config or {}
+    interactive_cfg = _resolve_interactive_config(cfg)
     plots_cfg = cfg.get("plots", {}) or {}
     _, density_cfg = (
         (cfg, plots_cfg.get("density", {}) or {}) if "density" in plots_cfg else ({}, cfg)
@@ -366,6 +396,8 @@ def make_density_interactive(
         y=y_centres,
         colorscale=colorscale,
         colorbar={"title": colorbar_title},
+        # Hover must fire over empty bins so the preview can say "no frames".
+        hoverongaps=True,
         hovertemplate=(
             f"{pair.x_label}: %{{x:.1f}}<br>"
             f"{pair.y_label}: %{{y:.1f}}<br>"
@@ -373,7 +405,6 @@ def make_density_interactive(
         ),
     )
 
-    interactive_cfg = _resolve_interactive_config(cfg)
     theme = interactive_cfg["theme"]
     plotly_theme = _PLOTLY_THEME_COLORS["dark" if theme == "dark" else "light"]
 
@@ -451,6 +482,10 @@ def make_density_interactive(
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
         "frame_metadata": frame_metadata,
+        "settings": {
+            "hover_preview": interactive_cfg["hover_preview"],
+            "max_pinned": interactive_cfg["max_pinned"],
+        },
         "ui_state": {
             "theme": theme,
             "scale_mode": None,

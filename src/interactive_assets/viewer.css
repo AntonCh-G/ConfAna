@@ -181,6 +181,49 @@ html, body {
   padding: 12px;
 }
 
+.ca-preview-meta {
+  font-family: var(--ca-font-mono);
+  font-size: 12px;
+}
+
+/* 3Dmol's canvas is absolutely positioned at 100% x 100% of this box. */
+.ca-preview-viewer {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  border: 1px solid var(--ca-border);
+  border-radius: 4px;
+  background: var(--ca-viewer-bg);
+}
+
+.ca-preview-status {
+  color: var(--ca-fg-muted);
+  font-family: var(--ca-font-sans);
+  margin-bottom: 6px;
+}
+
+.ca-readout {
+  margin-bottom: 8px;
+}
+
+.ca-notice {
+  margin: 10px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--ca-accent);
+  border-radius: 4px;
+  background: var(--ca-bg);
+  font-size: 12px;
+}
+
+.ca-viewer-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ca-fg-muted);
+  font-size: 12px;
+}
+
 .ca-tray {
   padding: 12px;
   font-family: var(--ca-font-mono);

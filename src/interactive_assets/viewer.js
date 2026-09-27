@@ -3,14 +3,15 @@
  *
  * Reads the single embedded #page-data JSON object and wires up:
  *  - header stats (frame count, bin count, scale mode)
- *  - light/dark theme toggle, synced into Plotly and any open 3Dmol viewers
- *  - the comparison tray: clicking a bin/frame opens a persistent card with
- *    its own 3Dmol viewer (multi-card design; no singleton #viewer3d).
+ *  - light/dark theme toggle, synced into Plotly and the 3Dmol viewers
+ *  - live hover preview: one shared 3Dmol viewer plus a read-out and a
+ *    metadata table for the bin under the cursor
+ *  - pinned cards: clicking a bin/frame opens a persistent card with its own
+ *    3Dmol viewer (multi-card design; no singleton #viewer3d), capped at
+ *    settings.max_pinned with the oldest card evicted
  *
- * Placeholders left for later slices (inert in Slice 1):
- *  - #preview-3d / #preview-metadata (hover preview, Slice 2)
- *  - ui_state.scale_mode / state_overlay_visible / temperature / unit /
- *    pinned_bins (Slices 4-5)
+ * Seams left for later slices (inert here): ui_state.scale_mode,
+ * state_overlay_visible, temperature, unit, pinned_bins.
  */
 (function () {
   'use strict';
@@ -26,6 +27,9 @@
   var binXyz = pageData.bin_xyz_payloads || null;
   var frames = pageData.frame_metadata || null;
   var uiState = pageData.ui_state || {};
+  var settings = pageData.settings || {};
+  var maxPinned = settings.max_pinned || 15;
+  var hoverPreview = settings.hover_preview !== false;
 
   // -------------------------------------------------------------------
   // Header
@@ -77,18 +81,27 @@
     return update;
   }
 
+  // Viewers currently on the page. Pooled (detached) viewers are skipped:
+  // setBackgroundColor renders, and they are recoloured when reused.
+  function attachedViewers() {
+    var list = [];
+    if (previewViewer) list.push(previewViewer);
+    var boxes = cardsEl ? cardsEl.querySelectorAll('.comparison-viewer') : [];
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i]._viewer3d) list.push(boxes[i]._viewer3d);
+    }
+    return list;
+  }
+
   function applyTheme() {
     if (gd && window.Plotly) {
       var update = plotThemeUpdate();
       if (Object.keys(update).length) Plotly.relayout(gd, update);
     }
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
-    Object.keys(openCards).forEach(function (key) {
-      var v = openCards[key]._viewer3d;
-      if (v) {
-        v.setBackgroundColor(viewerBg);
-        v.render();
-      }
+    attachedViewers().forEach(function (v) {
+      v.setBackgroundColor(viewerBg);
+      v.render();
     });
   }
 
@@ -111,16 +124,72 @@
   }
 
   // -------------------------------------------------------------------
-  // Comparison tray / cards (multi-card design; one 3Dmol viewer per card)
+  // 3Dmol viewers
   // -------------------------------------------------------------------
-  var trayEl = document.getElementById('comparison-tray');
-  var cardsEl = document.getElementById('comparison-cards');
-  var clearBtn = document.getElementById('comparison-clear');
-  var openCards = Object.create(null);
+  // Each 3Dmol viewer permanently registers a window resize listener and two
+  // observers, so card viewers are reused from a pool instead of recreated.
+  var viewerPool = [];
+  var viewerFailed = false;
 
-  function updateTrayVisibility() {
-    if (!trayEl || !cardsEl) return;
-    trayEl.style.display = cardsEl.children.length ? 'block' : 'none';
+  function createViewerIn(el) {
+    if (viewerFailed || typeof $3Dmol === 'undefined') return null;
+    try {
+      return $3Dmol.createViewer(el, {backgroundColor: hexToInt(cssVar('--ca-viewer-bg'))});
+    } catch (err) {
+      viewerFailed = true;
+      return null;
+    }
+  }
+
+  function showViewerError(el) {
+    el.innerHTML = '';
+    var msg = document.createElement('div');
+    msg.className = 'ca-viewer-error';
+    msg.textContent = '3D viewer could not load';
+    el.appendChild(msg);
+  }
+
+  function showStructure(v, xyzText) {
+    v.clear();
+    v.addModel(xyzText, 'xyz');
+    v.setStyle({}, {stick: {}});
+    v.zoomTo();
+    v.render();
+  }
+
+  // The card must already be in the DOM: 3Dmol sizes against the visible box.
+  function takeViewerBox(card) {
+    var box = viewerPool.pop();
+    if (box) {
+      card.appendChild(box);
+      box._viewer3d.setBackgroundColor(hexToInt(cssVar('--ca-viewer-bg')));
+      box._viewer3d.resize();
+      return box;
+    }
+    box = document.createElement('div');
+    box.className = 'comparison-viewer';
+    card.appendChild(box);
+    box._viewer3d = createViewerIn(box);
+    if (!box._viewer3d) showViewerError(box);
+    return box;
+  }
+
+  function releaseViewerBox(card) {
+    var box = card.querySelector('.comparison-viewer');
+    if (!box) return;
+    if (box._viewer3d) box._viewer3d.clear();
+    box.parentNode.removeChild(box);
+    if (box._viewer3d) viewerPool.push(box);
+  }
+
+  // -------------------------------------------------------------------
+  // Shared helpers
+  // -------------------------------------------------------------------
+  // Plotly heatmap events report the bin as pointNumber = [row, col] = [yi, xi].
+  function binFromPoint(pt) {
+    var pn = pt.pointNumber;
+    if (!Array.isArray(pn) || pn.length !== 2) return null;
+    return {xi: pn[1], yi: pn[0], key: pn[1] + '_' + pn[0]};
   }
 
   function formatValue(value) {
@@ -159,6 +228,31 @@
     return html;
   }
 
+  // -------------------------------------------------------------------
+  // Pinned cards (multi-card design; one 3Dmol viewer per card)
+  // -------------------------------------------------------------------
+  var trayEl = document.getElementById('comparison-tray');
+  var cardsEl = document.getElementById('comparison-cards');
+  var clearBtn = document.getElementById('comparison-clear');
+  var noticeEl = document.getElementById('panel-notice');
+  var openCards = Object.create(null);
+  var noticeTimer = null;
+
+  function updateTrayVisibility() {
+    if (!trayEl || !cardsEl) return;
+    trayEl.style.display = cardsEl.children.length ? 'block' : 'none';
+  }
+
+  function showNotice(message) {
+    if (!noticeEl) return;
+    noticeEl.textContent = message;
+    noticeEl.hidden = false;
+    if (noticeTimer) window.clearTimeout(noticeTimer);
+    noticeTimer = window.setTimeout(function () {
+      noticeEl.hidden = true;
+    }, 3000);
+  }
+
   function getCardKey(best, xi, yi) {
     if (binGeo && xi !== null && yi !== null) return 'bin:' + xi + '_' + yi;
     if (best.frame_id != null) return 'frame:' + best.frame_id;
@@ -183,48 +277,41 @@
     }, 800);
   }
 
-  function getOrCreateViewer(card) {
-    if (card._viewer3d) return card._viewer3d;
-    if (typeof $3Dmol === 'undefined') return null;
-    var viewerEl = card.querySelector('.comparison-viewer');
-    if (!viewerEl) return null;
-    card._viewer3d = $3Dmol.createViewer(viewerEl, {
-      backgroundColor: hexToInt(cssVar('--ca-viewer-bg'))
-    });
-    return card._viewer3d;
-  }
-
-  function renderCardStructure(card, xyzText) {
-    if (!xyzText) return;
-    var v3d = getOrCreateViewer(card);
-    if (!v3d) return;
-    v3d.clear();
-    v3d.addModel(xyzText, 'xyz');
-    v3d.setStyle({}, {stick: {}});
-    v3d.zoomTo();
-    v3d.render();
+  // The DOM is the single record of pinned cards and their order; openCards
+  // only maps keys to elements for de-duplication.
+  function removeCardElement(card) {
+    releaseViewerBox(card);
+    if (card.parentNode) card.parentNode.removeChild(card);
+    delete openCards[card.dataset.cardKey];
+    updateTrayVisibility();
   }
 
   function removeCard(cardKey) {
     var card = openCards[cardKey];
-    if (!card) return;
-    if (card._viewer3d) card._viewer3d.clear();
-    if (card.parentNode) card.parentNode.removeChild(card);
-    delete openCards[cardKey];
-    updateTrayVisibility();
+    if (card) removeCardElement(card);
   }
 
   function clearAllCards() {
-    var keys = Object.keys(openCards);
-    for (var i = 0; i < keys.length; i++) {
-      removeCard(keys[i]);
+    while (cardsEl && cardsEl.firstElementChild) {
+      removeCardElement(cardsEl.firstElementChild);
     }
     updateTrayVisibility();
   }
 
   function createCard(cardKey, cardTitle, metadataHtml, xyzText) {
+    // Cards are prepended, so the last child is the oldest.
+    var evicted = false;
+    while (cardsEl.children.length >= maxPinned) {
+      removeCardElement(cardsEl.lastElementChild);
+      evicted = true;
+    }
+    if (evicted) {
+      showNotice('Pin limit (' + maxPinned + ') reached — removed the oldest pinned structure.');
+    }
+
     var card = document.createElement('div');
     card.className = 'ca-card';
+    card.dataset.cardKey = cardKey;
 
     var header = document.createElement('div');
     header.className = 'ca-card-header';
@@ -249,16 +336,15 @@
     metaEl.innerHTML = metadataHtml;
     card.appendChild(metaEl);
 
-    if (xyzText) {
-      var viewerEl = document.createElement('div');
-      viewerEl.className = 'comparison-viewer';
-      card.appendChild(viewerEl);
-    }
-
     cardsEl.prepend(card);
     openCards[cardKey] = card;
     updateTrayVisibility();
-    renderCardStructure(card, xyzText);
+
+    if (xyzText) {
+      var box = takeViewerBox(card);
+      if (box._viewer3d) showStructure(box._viewer3d, xyzText);
+    }
+
     focusCard(card);
     return card;
   }
@@ -269,8 +355,121 @@
     });
   }
 
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') clearAllCards();
+  });
+
   // -------------------------------------------------------------------
-  // Plotly click handling
+  // Hover preview
+  // -------------------------------------------------------------------
+  var previewBox = document.getElementById('preview-3d');
+  var previewMetaBox = document.getElementById('preview-metadata');
+  var previewViewerEl = document.getElementById('preview-viewer');
+  var previewStatusEl = document.getElementById('preview-status');
+  var previewReadoutEl = document.getElementById('preview-readout');
+  var previewMetaEl = document.getElementById('preview-meta');
+  // In per-frame mode 3Dmol is never embedded, so there is no 3D preview.
+  var hasStructures = !!(binGeo && binXyz);
+  var previewViewer = null;
+  var previewFailed = false;
+  var lastShownKey = null;
+  var currentHoverKey = null;
+  var pendingPoint = null;
+  var hoverFrameRequested = false;
+
+  function setStatus(text) {
+    if (previewStatusEl) previewStatusEl.textContent = text;
+  }
+
+  function showingSuffix() {
+    return lastShownKey ? ' — showing bin ' + lastShownKey : '';
+  }
+
+  function updateReadout(pt) {
+    if (!previewReadoutEl) return;
+    previewReadoutEl.innerHTML = '';
+    var rows = [
+      [pairInfo.x_label || axisSpec.x_col, pt.x],
+      [pairInfo.y_label || axisSpec.y_col, pt.y],
+      [headerInfo.scale_mode_label || 'value', pt.z]
+    ];
+    rows.forEach(function (row) {
+      var line = document.createElement('div');
+      var label = document.createElement('b');
+      label.textContent = row[0] + ': ';
+      line.appendChild(label);
+      line.appendChild(
+        document.createTextNode(Number.isFinite(row[1]) ? formatValue(row[1]) : '—')
+      );
+      previewReadoutEl.appendChild(line);
+    });
+  }
+
+  function ensurePreviewViewer() {
+    if (previewViewer || previewFailed) return previewViewer;
+    previewViewer = createViewerIn(previewViewerEl);
+    if (!previewViewer) {
+      previewFailed = true;
+      showViewerError(previewViewerEl);
+    }
+    return previewViewer;
+  }
+
+  function processHover() {
+    hoverFrameRequested = false;
+    var pt = pendingPoint;
+    if (!pt) return;
+    var bin = binFromPoint(pt);
+    var key = bin ? bin.key : pt.x + ',' + pt.y;
+    if (key === currentHoverKey) return;
+    currentHoverKey = key;
+
+    // Read-out first, so it keeps working even if the 3D viewer fails.
+    updateReadout(pt);
+
+    if (!binGeo) {
+      // Per-frame mode: never scan frame_metadata on hover (click only).
+      setStatus(Number.isFinite(pt.z) ? 'Click to pin the nearest frame' : 'No frames in this bin');
+      return;
+    }
+
+    var record = bin && binFrameMeta ? binFrameMeta[bin.key] : null;
+    if (!record) {
+      setStatus('No frames in this bin' + showingSuffix());
+      return;
+    }
+    if (previewMetaEl) previewMetaEl.innerHTML = buildMetadataHtml(record);
+
+    var xyzText = binXyz ? binXyz[bin.key] : null;
+    if (!xyzText) {
+      setStatus('No structure available for bin ' + bin.key + showingSuffix());
+      return;
+    }
+    var v = ensurePreviewViewer();
+    if (v) {
+      showStructure(v, xyzText);
+      lastShownKey = bin.key;
+    }
+    setStatus('Bin ' + bin.key);
+  }
+
+  function onHover(data) {
+    if (!data || !data.points || !data.points.length) return;
+    pendingPoint = data.points[0];
+    if (!hoverFrameRequested) {
+      hoverFrameRequested = true;
+      window.requestAnimationFrame(processHover);
+    }
+  }
+
+  // Un-hide before any viewer is created, so 3Dmol measures a visible box.
+  if (hoverPreview) {
+    if (previewMetaBox) previewMetaBox.hidden = false;
+    if (previewBox && hasStructures) previewBox.hidden = false;
+  }
+
+  // -------------------------------------------------------------------
+  // Plotly events
   // -------------------------------------------------------------------
   // gd.on(...) is Plotly's own pub/sub attached to the graph div (not a
   // native DOM event); it is available synchronously once the plot
@@ -281,22 +480,25 @@
 
   if (gd) {
     gd.on('plotly_click', function (data) {
+      // Double-click clears the pins. Use the browser's click count, which
+      // requires both clicks in the same spot: plotly_doubleclick fires for
+      // any two clicks within 300 ms, even on different bins, and would wipe
+      // the pins when clicking quickly.
+      if (data.event && data.event.detail >= 2) {
+        clearAllCards();
+        return;
+      }
       var pt = data.points[0];
       var cx = pt.x;
       var cy = pt.y;
 
-      var xi = null;
-      var yi = null;
-      if (binGeo) {
-        xi = Math.floor((cx - binGeo.x_min) / binGeo.bin_w);
-        yi = Math.floor((cy - binGeo.y_min) / binGeo.bin_h);
-        xi = Math.max(0, Math.min(xi, binGeo.n_bins_x - 1));
-        yi = Math.max(0, Math.min(yi, binGeo.n_bins_y - 1));
-      }
+      var bin = binGeo ? binFromPoint(pt) : null;
+      var xi = bin ? bin.xi : null;
+      var yi = bin ? bin.yi : null;
 
       var best = null;
-      if (binFrameMeta && binGeo) {
-        best = binFrameMeta[xi + '_' + yi] || null;
+      if (binFrameMeta && bin) {
+        best = binFrameMeta[bin.key] || null;
       } else if (frames) {
         var bestDist = Infinity;
         for (var i = 0; i < frames.length; i++) {
@@ -320,17 +522,12 @@
         return;
       }
 
-      var xyzText = null;
-      if (binXyz && binGeo && xi !== null && yi !== null) {
-        xyzText = binXyz[xi + '_' + yi] || null;
-      }
+      var xyzText = binXyz && bin ? binXyz[bin.key] || null : null;
 
       createCard(cardKey, getCardTitle(best, xi, yi), buildMetadataHtml(best), xyzText);
     });
 
-    gd.on('plotly_doubleclick', function () {
-      clearAllCards();
-    });
+    if (hoverPreview) gd.on('plotly_hover', onHover);
   }
 
   applyTheme();

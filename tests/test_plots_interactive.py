@@ -492,6 +492,78 @@ def test_make_density_interactive_embeds_ui_state_from_config(tmp_path):
     assert data["ui_state"]["theme"] == "dark"
 
 
+# ---------------------------------------------------------------------------
+# Slice 2: hover preview and pin limit
+# ---------------------------------------------------------------------------
+
+
+def _interactive_cfg(**interactive) -> dict:
+    return {"plots": {"interactive": interactive}}
+
+
+def test_make_density_interactive_embeds_default_settings(tmp_path):
+    outpath = tmp_path / "settings_default.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath)
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["settings"] == {"hover_preview": True, "max_pinned": 15}
+
+
+def test_make_density_interactive_embeds_max_pinned_from_config(tmp_path):
+    outpath = tmp_path / "settings_pinned.html"
+    make_density_interactive(
+        _make_angle_df(), _plane_pair(), outpath, config=_interactive_cfg(max_pinned=5)
+    )
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["settings"]["max_pinned"] == 5
+
+
+def test_make_density_interactive_embeds_hover_preview_disabled(tmp_path):
+    outpath = tmp_path / "settings_no_hover.html"
+    make_density_interactive(
+        _make_angle_df(), _plane_pair(), outpath, config=_interactive_cfg(hover_preview=False)
+    )
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["settings"]["hover_preview"] is False
+
+
+@pytest.mark.parametrize("value", [0, -3, 2.5, "15", True])
+def test_make_density_interactive_invalid_max_pinned_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="max_pinned"):
+        make_density_interactive(
+            _make_angle_df(),
+            _plane_pair(),
+            tmp_path / "bad.html",
+            config=_interactive_cfg(max_pinned=value),
+        )
+
+
+@pytest.mark.parametrize("value", ["yes", 1])
+def test_make_density_interactive_invalid_hover_preview_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="hover_preview"):
+        make_density_interactive(
+            _make_angle_df(),
+            _plane_pair(),
+            tmp_path / "bad.html",
+            config=_interactive_cfg(hover_preview=value),
+        )
+
+
+def test_make_density_interactive_contains_hover_preview_markup(tmp_path):
+    outpath = tmp_path / "hover_markup.html"
+    # Plotly from CDN so the plotly_hover check can only match viewer.js.
+    make_density_interactive(
+        _make_angle_df(),
+        _plane_pair(),
+        outpath,
+        config=_interactive_cfg(embed_xyz_payload=True, include_plotlyjs="cdn"),
+    )
+    content = outpath.read_text(encoding="utf-8")
+    assert 'id="preview-viewer"' in content
+    assert 'id="preview-readout"' in content
+    assert 'id="panel-notice"' in content
+    assert "plotly_hover" in content
+
+
 def test_render_density_page_is_deterministic():
     page_data = {
         "schema_version": 1,
@@ -537,10 +609,6 @@ def test_render_density_page_is_deterministic():
     assert first == third
 
 
-def _interactive_cfg(**interactive) -> dict:
-    return {"plots": {"interactive": interactive}}
-
-
 # ---------------------------------------------------------------------------
 # Inline content must not end its <script>/<style> element early
 # ---------------------------------------------------------------------------
@@ -558,6 +626,7 @@ def _minimal_page_data(frame_metadata: list[dict] | None = None) -> dict:
         "bin_frame_metadata": None,
         "bin_xyz_payloads": None,
         "frame_metadata": frame_metadata or [{"frame_id": 0, "x": 1.0, "y": 2.0}],
+        "settings": {"hover_preview": True, "max_pinned": 15},
         "ui_state": {"theme": "auto"},
         "plot_html": "<div>plot</div>",
         "include_3dmol": "inline",

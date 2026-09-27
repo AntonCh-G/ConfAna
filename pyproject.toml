@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "playwright>=1.63.0",
     "pytest>=7.0",
     "pytest-cov",
 ]
@@ -44,3 +45,6 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "browser: drives generated pages in headless Chromium (needs `python -m playwright install chromium --no-shell`)",
+]
