@@ -21,6 +21,8 @@ Public API
 - ``assign_conformer_states``
 - ``assign_conformer_states_from_config``
 - ``load_or_build_trajectory_states``
+- ``resolve_state_groupby``
+- ``build_bin_state_overlay``
 """
 
 from __future__ import annotations
@@ -571,3 +573,192 @@ def load_or_build_trajectory_states(
     _write_coordinate_npz(state_df_save, cache_path, cache_metadata=state_meta)
 
     return result, False
+
+
+# ---------------------------------------------------------------------------
+# Per-bin state overlay (for the interactive density page)
+# ---------------------------------------------------------------------------
+
+_NOISE_LABEL = "noise"
+
+
+def resolve_state_groupby(config: dict[str, Any]) -> list[str] | None:
+    """Return the grouping columns states were clustered by, from config.
+
+    Reads ``clustering.groupby`` exactly as
+    :func:`assign_conformer_states_from_config` does (from the full config
+    or the ``clustering:`` section). ``None`` means one group of all frames.
+    """
+    section = config.get("clustering", config) or {}
+    return _coerce_groupby(section.get("groupby"))
+
+
+def _natural_label_key(label: str) -> tuple[int, int, str]:
+    """Sort numeric labels by value ("2" before "10"), then others by text."""
+    return (0, int(label), "") if label.isdigit() else (1, 0, label)
+
+
+def _histogram_bin_indices(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Bin index per value as ``np.histogram2d`` assigns it; -1 outside the edges.
+
+    Bins are right-open except the last, which includes the right edge.
+    """
+    v = np.asarray(values, dtype=float)
+    idx = np.searchsorted(edges, v, side="right") - 1
+    idx[v == edges[-1]] = len(edges) - 2
+    idx[~np.isfinite(v) | (v < edges[0]) | (v > edges[-1])] = -1
+    return idx
+
+
+def _axis_centre(values: np.ndarray, periodic: bool) -> float:
+    """Mean of *values* (degrees); circular mean when the axis is periodic."""
+    if periodic:
+        rad = np.deg2rad(values)
+        return float(np.rad2deg(np.arctan2(np.sin(rad).mean(), np.cos(rad).mean())))
+    return float(np.mean(values))
+
+
+def _state_group_name(keys: dict[str, Any]) -> str:
+    """Readable group name, e.g. ``"my_run.pos / bead 00"``."""
+    parts = []
+    for col, value in keys.items():
+        text = "none" if value is None else str(value)
+        parts.append(f"bead {text}" if col == "bead_id" else text)
+    return " / ".join(parts) or "all frames"
+
+
+def build_bin_state_overlay(
+    df: pd.DataFrame,
+    pair: CoordinatePair,
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    groupby: Sequence[str] | None = None,
+) -> dict | None:
+    """Return the majority state of each histogram bin, one map per group.
+
+    States are clustered separately per ``groupby`` group and their labels
+    are not unified across groups ("0" in one bead may be a different region
+    from "0" in another), so bins are never pooled across groups: each group
+    gets its own map.
+
+    Within a group, each bin takes the label held by most of its frames.
+    Noise and unset (NA) frames take part; when they win, the bin has no
+    state. Ties go to a real state first, then to the earlier label in
+    natural order ("2" before "10"). Frames outside the edges are ignored,
+    with bins assigned exactly as :func:`np.histogram2d` assigns them.
+
+    Parameters
+    ----------
+    df:
+        Coordinate table with ``pair.feature_columns`` and ``pair.state_col``.
+    pair:
+        Coordinate pair; ``pair.periodic`` makes the centres circular means.
+    x_edges, y_edges:
+        Histogram bin edges of the density map.
+    groupby:
+        Columns the states were clustered by (see :func:`resolve_state_groupby`).
+
+    Returns
+    -------
+    dict | None
+        ``None`` when ``pair.state_col`` is not in *df*. Otherwise::
+
+            {"state_col": str,
+             "groupby": [str, ...],
+             "labels": [str, ...],          # every state label, natural order
+             "groups": [{
+                 "name": str,               # e.g. "my_run.pos / bead 00"
+                 "keys": {col: str | None},
+                 "bins": [int, ...],        # flat bin index yi * n_bins_x + xi
+                 "states": [int, ...],      # index into labels, per bin
+                 "centres": [{"state": int, "x": float, "y": float, "frames": int}]
+             }, ...]}
+
+        ``centres`` are each state's population-weighted centre in the
+        group: the mean (circular for periodic pairs) of its frames' values.
+
+    Raises
+    ------
+    ValueError
+        If a ``groupby`` column or a feature column is missing from *df*.
+    """
+    state_col = pair.state_col
+    if state_col not in df.columns:
+        return None
+
+    groupby_cols = _coerce_groupby(groupby) or []
+    x_col, y_col = pair.feature_columns
+    missing = [c for c in [x_col, y_col, *groupby_cols] if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"build_bin_state_overlay: columns {missing} not found for pair '{pair.name}'."
+        )
+
+    x_values = df[x_col].to_numpy(dtype=float)
+    y_values = df[y_col].to_numpy(dtype=float)
+    xi = _histogram_bin_indices(x_values, np.asarray(x_edges, dtype=float))
+    yi = _histogram_bin_indices(y_values, np.asarray(y_edges, dtype=float))
+    inside = (xi >= 0) & (yi >= 0)
+    flat_bin = yi * (len(x_edges) - 1) + xi
+
+    raw = df[state_col].astype("string")
+    labelled = (raw.notna() & raw.ne(_NOISE_LABEL)).fillna(False).to_numpy(dtype=bool)
+    usable = labelled & inside
+    labels = sorted(set(raw[usable].tolist()), key=_natural_label_key)
+    no_state = len(labels)
+    codes = np.full(len(df), no_state, dtype=np.int64)
+    if labels:
+        codes[usable] = pd.Categorical(raw[usable], categories=labels).codes
+
+    if groupby_cols:
+        by = groupby_cols if len(groupby_cols) > 1 else groupby_cols[0]
+        group_items = df.groupby(by, dropna=False, sort=True).indices.items()
+    else:
+        group_items = [((), np.arange(len(df)))]
+
+    groups = []
+    n_codes = no_state + 1
+    for key, positions in group_items:
+        key_tuple = key if isinstance(key, tuple) else (key,)
+        keys = {
+            col: None if pd.isna(value) else str(value)
+            for col, value in zip(groupby_cols, key_tuple)
+        }
+        pos = np.asarray(positions)[inside[positions]]
+        group_codes = codes[pos]
+
+        combo, counts = np.unique(flat_bin[pos] * n_codes + group_codes, return_counts=True)
+        bins, bin_codes = combo // n_codes, combo % n_codes
+        # Per bin: most frames first, then the lowest code (real states before
+        # the no-state code, then natural label order).
+        order = np.lexsort((bin_codes, -counts, bins))
+        bins, bin_codes = bins[order], bin_codes[order]
+        first = np.ones(len(bins), dtype=bool)
+        first[1:] = bins[1:] != bins[:-1]
+        winner_bins, winner_codes = bins[first], bin_codes[first]
+        has_state = winner_codes < no_state
+
+        centres = []
+        for code in np.unique(group_codes[group_codes < no_state]):
+            rows = pos[group_codes == code]
+            centres.append({
+                "state": int(code),
+                "x": _axis_centre(x_values[rows], pair.periodic),
+                "y": _axis_centre(y_values[rows], pair.periodic),
+                "frames": int(len(rows)),
+            })
+
+        groups.append({
+            "name": _state_group_name(keys),
+            "keys": keys,
+            "bins": winner_bins[has_state].tolist(),
+            "states": winner_codes[has_state].tolist(),
+            "centres": centres,
+        })
+
+    return {
+        "state_col": state_col,
+        "groupby": groupby_cols,
+        "labels": labels,
+        "groups": groups,
+    }

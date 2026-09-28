@@ -915,3 +915,215 @@ def test_scale_controls_markup_present(tmp_path):
         assert f'data-scale="{mode}"' in content
     assert 'id="fe-temperature"' in content
     assert 'id="fe-unit"' in content
+
+
+# ---------------------------------------------------------------------------
+# Slice 5: state overlay
+# ---------------------------------------------------------------------------
+
+
+def _state_df() -> pd.DataFrame:
+    """_counts_df with states; bead 00 and 01 number the same regions differently."""
+    df = _counts_df()  # bins (0,0)×4, (1,0)×2, (2,2)×1
+    df["bead_id"] = ["00", "00", "01", "01", "00", "01", "00"]
+    df["state_plane"] = pd.array(["0", "0", "1", "1", "1", "0", "noise"], dtype="string")
+    return df
+
+
+def test_state_overlay_trace_and_toggle_present_with_state_column(tmp_path):
+    cfg = {"clustering": {"groupby": ["bead_id"]}}
+    data, content = _build(tmp_path, config=cfg, df=_state_df())
+    states = data["states"]
+    assert states["state_col"] == "state_plane"
+    assert states["labels"] == ["0", "1"]
+    assert states["colors"] == ["#1f77b4", "#ff7f0e"]
+    assert [g["name"] for g in states["groups"]] == ["bead 00", "bead 01"]
+
+    fig_data, layout = _plot_figure(content)
+    assert len(fig_data) == 2
+    overlay = fig_data[1]
+    assert overlay["name"] == "states"
+    assert overlay["visible"] is False
+    assert overlay["opacity"] == pytest.approx(0.35)
+    assert overlay["hoverinfo"] == "skip"
+    # Starts on the first group: bead 00 has bin (0,0) → "0" (2 of 2) and
+    # bin (1,0) → "1"; bin (2,2) is noise → no state.
+    z = _plotly_array(overlay["z"])
+    assert z[0, 0] == 0 and z[0, 1] == 1
+    assert np.isnan(z[2, 2]) and np.isnan(z[1]).all()
+    assert [a["text"] for a in layout["annotations"]] == ["0", "1"]
+    assert all(a["visible"] is False for a in layout["annotations"])
+
+    assert 'id="states-toggle"' in content
+    assert 'id="state-group"' in content
+    assert data["ui_state"]["state_overlay_visible"] is False
+    assert data["ui_state"]["state_group"] == 0
+
+
+def test_state_overlay_absent_without_state_column(tmp_path):
+    df = _counts_df().drop(columns=["state_plane", "state_dihedral"])
+    data, content = _build(tmp_path, df=df)
+    assert data["states"] is None
+    fig_data, layout = _plot_figure(content)
+    assert len(fig_data) == 1
+    assert not layout.get("annotations")
+    assert 'id="states-toggle"' not in content
+    assert 'id="state-group"' not in content
+    assert data["ui_state"]["state_overlay_visible"] is False
+
+
+def test_show_states_config_makes_overlay_visible(tmp_path):
+    cfg = {"plots": {"interactive": {"show_states": True}}}
+    data, content = _build(tmp_path, config=cfg, df=_state_df())
+    fig_data, layout = _plot_figure(content)
+    assert fig_data[1]["visible"] is True
+    assert all(a["visible"] is True for a in layout["annotations"])
+    assert data["ui_state"]["state_overlay_visible"] is True
+    # No clustering.groupby: one group of all frames.
+    assert [g["name"] for g in data["states"]["groups"]] == ["all frames"]
+
+
+@pytest.mark.parametrize("value", ["yes", 1])
+def test_invalid_show_states_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="show_states"):
+        _build(tmp_path, config={"plots": {"interactive": {"show_states": value}}}, df=_state_df())
+
+
+# ---------------------------------------------------------------------------
+# Theme colour scales
+# ---------------------------------------------------------------------------
+
+
+def test_theme_colorscale_keeps_viridis_on_white_and_trims_it_on_dark():
+    from src.plots_interactive import (
+        _PLOTLY_THEME_COLORS,
+        _contrast_ratio,
+        _named_colorscale,
+        _rgb,
+        _theme_colorscale,
+    )
+
+    viridis = _named_colorscale("viridis", "test")
+    assert _theme_colorscale("viridis", "light") == viridis
+    dark = _theme_colorscale("viridis", "dark")
+    dark_bg = _rgb(_PLOTLY_THEME_COLORS["dark"]["plot_bgcolor"])
+    assert _contrast_ratio(_rgb(dark[0][1]), dark_bg) >= 2.0
+    assert _contrast_ratio(_rgb(viridis[0][1]), dark_bg) < 2.0
+    # Same direction: the bright end stays viridis yellow.
+    assert _rgb(dark[-1][1]) == _rgb(viridis[-1][1])
+    assert dark[0][0] == 0.0 and dark[-1][0] == 1.0
+
+
+def test_theme_colorscale_trims_near_white_end_on_light():
+    from src.plots_interactive import _contrast_ratio, _named_colorscale, _rgb, _theme_colorscale
+
+    blues = _named_colorscale("Blues", "test")
+    light = _theme_colorscale("Blues", "light")
+    white = (255.0, 255.0, 255.0)
+    assert _contrast_ratio(_rgb(blues[0][1]), white) < 1.25
+    assert _contrast_ratio(_rgb(light[0][1]), white) >= 1.25
+    assert _rgb(light[-1][1]) == _rgb(blues[-1][1])
+
+
+def test_theme_colorscale_ignores_a_pale_middle():
+    from src.plots_interactive import _named_colorscale, _theme_colorscale
+
+    # jet's yellow middle is pale on white, but only the ends are trimmed.
+    assert _theme_colorscale("jet", "light") == _named_colorscale("jet", "test")
+
+
+def test_page_embeds_both_theme_colorscales_and_bakes_the_active_one(tmp_path):
+    from src.plots_interactive import _theme_colorscale
+
+    data, content = _build(tmp_path)
+    scales = data["scale"]["colorscales"]
+    assert scales == {
+        "light": _theme_colorscale("Viridis", "light"),
+        "dark": _theme_colorscale("Viridis", "dark"),
+    }
+    fig_data, _ = _plot_figure(content)
+    assert fig_data[0]["colorscale"] == scales["light"]  # theme: auto bakes light
+
+    data, content = _build(tmp_path, config=_interactive_cfg(theme="dark"), name="dark.html")
+    fig_data, _ = _plot_figure(content)
+    assert fig_data[0]["colorscale"] == data["scale"]["colorscales"]["dark"]
+
+
+def test_explicit_theme_colorscales_are_used_unchanged(tmp_path):
+    from src.plots_interactive import _named_colorscale
+
+    cfg = _interactive_cfg(theme_colorscales={"dark": "plasma_r"})
+    data, _ = _build(tmp_path, config=cfg)
+    assert data["scale"]["colorscales"]["dark"] == _named_colorscale("plasma_r", "test")
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ({"dark": "not-a-scale"}, "plots.interactive.theme_colorscales.dark"),
+        ({"dim": "viridis"}, "theme_colorscales"),
+        ("viridis", "theme_colorscales"),
+    ],
+)
+def test_invalid_theme_colorscales_raise(tmp_path, value, match):
+    with pytest.raises(ValueError, match=re.escape(match)):
+        _build(tmp_path, config=_interactive_cfg(theme_colorscales=value))
+
+
+# ---------------------------------------------------------------------------
+# Degree axis ticks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("span", "step"),
+    [(360, 60), (180, 30), (90, 15), (60, 10), (20, 5), (10, 2), (0.5, 1), (1000, 90), (-360, 60)],
+)
+def test_degree_tick_step(span, step):
+    from src.plots_interactive import _degree_tick_step
+
+    assert _degree_tick_step(span) == step
+
+
+@pytest.mark.parametrize(
+    ("dof_type", "label", "expected"),
+    [
+        ("dihedral", "Carboxyl dihedral (°)", True),
+        ("angle", "Bond angle", True),
+        ("distance", "C–O distance (°)", False),  # the DoF type wins over the label
+        (None, "Carboxyl vs ring (°)", True),
+        (None, "PC1", False),
+    ],
+)
+def test_is_degree_axis(dof_type, label, expected):
+    from src.plots_interactive import _is_degree_axis
+
+    assert _is_degree_axis(dof_type, label) is expected
+
+
+def test_degree_axes_get_degree_ticks(tmp_path):
+    outpath = tmp_path / "ticks.html"
+    pair = CoordinatePair(
+        name="mixed", x_col="carboxyl_dihedral", y_col="carboxyl_plane",
+        x_label="Carboxyl dihedral (°)", y_label="C–O distance (Å)", title="t",
+        x_domain=(-180.0, 180.0), y_domain=(0.0, 180.0),
+        x_dof_type="dihedral", y_dof_type="distance",
+    )
+    make_density_interactive(_make_angle_df(), pair, outpath)
+    content = outpath.read_text(encoding="utf-8")
+    _, layout = _plot_figure(content)
+    assert layout["xaxis"]["tickmode"] == "linear"
+    assert layout["xaxis"]["tick0"] == 0
+    assert layout["xaxis"]["dtick"] == 60
+    assert layout["xaxis"]["ticksuffix"] == "°"
+    assert "dtick" not in layout["yaxis"] and "ticksuffix" not in layout["yaxis"]
+    data = _page_data(content)
+    assert data["axis_ticks"]["x"] is True and data["axis_ticks"]["y"] is False
+    assert data["axis_ticks"]["steps"] == [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 45.0, 60.0, 90.0]
+
+
+def test_plane_axes_get_30_degree_ticks(tmp_path):
+    outpath = tmp_path / "plane_ticks.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath)
+    _, layout = _plot_figure(outpath.read_text(encoding="utf-8"))
+    assert layout["xaxis"]["dtick"] == 30 and layout["yaxis"]["dtick"] == 30

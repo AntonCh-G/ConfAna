@@ -15,9 +15,11 @@
  *  - colour scale: log counts | counts | free-energy-like, with an editable
  *    temperature and energy unit; grids and the unit table come from Python
  *    (page data scale), and ui_state is kept in step with the controls
+ *  - state overlay: a tint of the majority state per bin (trace 1) with
+ *    state-name labels, for one clustering group at a time (page data
+ *    states); the side panel names the hovered bin's state
  *
- * Seams left for later slices (inert here): ui_state.state_overlay_visible,
- * pinned_bins.
+ * Seam left for later slices (inert here): ui_state.pinned_bins.
  */
 (function () {
   'use strict';
@@ -105,6 +107,10 @@
     if ((layout.font || {}).color !== fg) update['font.color'] = fg;
     if ((layout.xaxis || {}).gridcolor !== grid) update['xaxis.gridcolor'] = grid;
     if ((layout.yaxis || {}).gridcolor !== grid) update['yaxis.gridcolor'] = grid;
+    var labelBg = cssVar('--ca-state-label-bg');
+    (layout.annotations || []).forEach(function (a, i) {
+      if (a.bgcolor !== labelBg) update['annotations[' + i + '].bgcolor'] = labelBg;
+    });
     ['x', 'y'].forEach(function (axis) {
       if (!axisAtomList(axis).length) return;
       var color = cssVar('--ca-axis-' + axis);
@@ -126,10 +132,30 @@
     return list;
   }
 
+  function activeTheme() {
+    if (root.dataset.theme === 'light' || root.dataset.theme === 'dark') return root.dataset.theme;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  }
+
+  // The map's colour scale for the active theme, when it is not shown yet.
+  function colorscaleUpdate() {
+    var scales = (pageData.scale || {}).colorscales;
+    if (!scales || !gd.data || !gd.data[0]) return {};
+    var wanted = scales[activeTheme()];
+    return JSON.stringify(gd.data[0].colorscale) === JSON.stringify(wanted)
+      ? {}
+      : {colorscale: [wanted]};
+  }
+
   function applyTheme() {
     if (gd && window.Plotly) {
-      var update = plotThemeUpdate();
-      if (Object.keys(update).length) Plotly.relayout(gd, update);
+      var layoutUpdate = plotThemeUpdate();
+      var traceUpdate = colorscaleUpdate();
+      if (Object.keys(layoutUpdate).length || Object.keys(traceUpdate).length) {
+        Plotly.update(gd, traceUpdate, layoutUpdate, [0]);
+      }
     }
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
     attachedViewers().forEach(function (v) {
@@ -142,12 +168,7 @@
   var themeToggle = document.getElementById('theme-toggle');
   if (themeToggle) {
     themeToggle.addEventListener('click', function () {
-      var current =
-        root.dataset.theme ||
-        (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-          ? 'dark'
-          : 'light');
-      root.dataset.theme = current === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = activeTheme() === 'dark' ? 'light' : 'dark';
       applyTheme();
     });
   }
@@ -459,14 +480,14 @@
       [scale ? valueLabel(scaleMode()) : headerInfo.scale_mode_label || 'value', value]
     ];
     if (bin && scale) rows.push(['count', scale.grids.counts[bin.yi][bin.xi] || 0]);
+    if (bin && states) rows.push(['state (' + currentStateGroup().name + ')', stateLabelAt(bin)]);
     rows.forEach(function (row) {
       var line = document.createElement('div');
       var label = document.createElement('b');
       label.textContent = row[0] + ': ';
       line.appendChild(label);
-      line.appendChild(
-        document.createTextNode(Number.isFinite(row[1]) ? formatValue(row[1]) : '—')
-      );
+      var text = typeof row[1] === 'string' ? row[1] : Number.isFinite(row[1]) ? formatValue(row[1]) : '—';
+      line.appendChild(document.createTextNode(text));
       previewReadoutEl.appendChild(line);
     });
   }
@@ -725,6 +746,132 @@
   }
 
   // -------------------------------------------------------------------
+  // State overlay (trace 1 and the layout annotations)
+  // -------------------------------------------------------------------
+  // States are clustered per group and their labels are not unified across
+  // groups, so the overlay shows one group at a time, never a mix.
+  var states = pageData.states || null;
+  var statesToggle = document.getElementById('states-toggle');
+  var stateGroupSelect = document.getElementById('state-group');
+  var currentStateGrid = null;
+  var emptyStateGroup = {name: 'all frames', bins: [], states: [], centres: []};
+
+  function currentStateGroup() {
+    return states.groups[uiState.state_group] || states.groups[0] || emptyStateGroup;
+  }
+
+  function stateGrid(group) {
+    var nx = headerInfo.bin_count_x;
+    var grid = [];
+    for (var yi = 0; yi < headerInfo.bin_count_y; yi++) {
+      var row = new Array(nx);
+      for (var xi = 0; xi < nx; xi++) row[xi] = null;
+      grid.push(row);
+    }
+    for (var i = 0; i < group.bins.length; i++) {
+      grid[Math.floor(group.bins[i] / nx)][group.bins[i] % nx] = group.states[i];
+    }
+    return grid;
+  }
+
+  function stateLabelAt(bin) {
+    var code = currentStateGrid ? currentStateGrid[bin.yi][bin.xi] : null;
+    return code === null ? 'none' : states.labels[code];
+  }
+
+  // Mirrors _state_annotations in plots_interactive.py.
+  function stateAnnotations(group, visible) {
+    var bg = cssVar('--ca-state-label-bg');
+    return group.centres.map(function (c) {
+      return {
+        x: c.x,
+        y: c.y,
+        text: states.labels[c.state],
+        showarrow: false,
+        font: {size: 12},
+        bgcolor: bg,
+        bordercolor: states.colors[c.state],
+        borderwidth: 1,
+        borderpad: 2,
+        visible: visible
+      };
+    });
+  }
+
+  function syncStateControls() {
+    if (statesToggle) {
+      statesToggle.setAttribute('aria-pressed', String(!!uiState.state_overlay_visible));
+    }
+  }
+
+  function applyStates(regrid) {
+    var visible = !!uiState.state_overlay_visible;
+    var group = currentStateGroup();
+    var traceUpdate = {visible: visible};
+    if (regrid) {
+      currentStateGrid = stateGrid(group);
+      traceUpdate.z = [currentStateGrid];
+    }
+    Plotly.update(gd, traceUpdate, {annotations: stateAnnotations(group, visible)}, [1]);
+    syncStateControls();
+    if (lastReadout) updateReadout(lastReadout.pt, lastReadout.bin);
+  }
+
+  if (states) {
+    // The figure was built in this state, so nothing is redrawn on load.
+    currentStateGrid = stateGrid(currentStateGroup());
+    if (stateGroupSelect) {
+      states.groups.forEach(function (g, i) {
+        var option = document.createElement('option');
+        option.value = String(i);
+        option.textContent = g.name;
+        stateGroupSelect.appendChild(option);
+      });
+      stateGroupSelect.value = String(states.groups[uiState.state_group] ? uiState.state_group : 0);
+      stateGroupSelect.hidden = states.groups.length < 2;
+      stateGroupSelect.addEventListener('change', function () {
+        uiState.state_group = Number(stateGroupSelect.value);
+        applyStates(true);
+      });
+    }
+    if (statesToggle) {
+      statesToggle.addEventListener('click', function () {
+        uiState.state_overlay_visible = !uiState.state_overlay_visible;
+        applyStates(false);
+      });
+    }
+    syncStateControls();
+  }
+
+  // -------------------------------------------------------------------
+  // Degree axis ticks
+  // -------------------------------------------------------------------
+  var axisTicks = pageData.axis_ticks || null;
+
+  // Mirrors _degree_tick_step in plots_interactive.py.
+  function degreeTickStep(span) {
+    var steps = axisTicks.steps;
+    for (var i = 0; i < steps.length; i++) {
+      if (Math.abs(span) / steps[i] <= axisTicks.max_intervals) return steps[i];
+    }
+    return steps[steps.length - 1];
+  }
+
+  // After a zoom or pan, re-pick the step for the visible range. Our own
+  // update fires plotly_relayout again, but then nothing differs, so it stops.
+  function updateDegreeTicks() {
+    if (!axisTicks || !gd._fullLayout) return;
+    var update = {};
+    ['x', 'y'].forEach(function (axis) {
+      if (!axisTicks[axis]) return;
+      var range = gd._fullLayout[axis + 'axis'].range;
+      var step = degreeTickStep(range[1] - range[0]);
+      if ((gd.layout[axis + 'axis'] || {}).dtick !== step) update[axis + 'axis.dtick'] = step;
+    });
+    if (Object.keys(update).length) Plotly.relayout(gd, update);
+  }
+
+  // -------------------------------------------------------------------
   // Plotly events
   // -------------------------------------------------------------------
   // gd.on(...) is Plotly's own pub/sub attached to the graph div (not a
@@ -784,6 +931,7 @@
     });
 
     if (hoverPreview) gd.on('plotly_hover', onHover);
+    gd.on('plotly_relayout', updateDegreeTicks);
   }
 
   applyTheme();

@@ -18,6 +18,7 @@
   --ca-axis-y: #0072b2;
   --ca-axis-both: #cc79a7;
   --ca-atom-neutral: #9aa0a6;
+  --ca-state-label-bg: rgba(255, 255, 255, 0.75);
 
   --ca-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --ca-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -40,6 +41,7 @@
     --ca-axis-y: #56b4e9;
     --ca-axis-both: #e3a3c8;
     --ca-atom-neutral: #8a929b;
+    --ca-state-label-bg: rgba(28, 32, 36, 0.75);
   }
 }
 
@@ -59,6 +61,7 @@
   --ca-axis-y: #56b4e9;
   --ca-axis-both: #e3a3c8;
   --ca-atom-neutral: #8a929b;
+  --ca-state-label-bg: rgba(28, 32, 36, 0.75);
 }
 
 :root[data-theme="light"] {
@@ -77,6 +80,7 @@
   --ca-axis-y: #0072b2;
   --ca-axis-both: #cc79a7;
   --ca-atom-neutral: #9aa0a6;
+  --ca-state-label-bg: rgba(255, 255, 255, 0.75);
 }
 
 * { box-sizing: border-box; }
@@ -200,6 +204,32 @@ html, body {
 .ca-fe-hint {
   color: var(--ca-fg-muted);
   font-style: italic;
+}
+
+.ca-state-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ca-state-controls select {
+  border: 1px solid var(--ca-border);
+  border-radius: 4px;
+  background: var(--ca-bg);
+  color: var(--ca-fg);
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.ca-state-controls select[hidden] {
+  display: none;
+}
+
+.ca-btn[aria-pressed="true"] {
+  background: var(--ca-accent);
+  border-color: var(--ca-accent);
+  color: var(--ca-accent-contrast);
 }
 
 .ca-btn {

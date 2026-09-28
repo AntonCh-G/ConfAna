@@ -114,6 +114,22 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         if name == "fe":
             config["transitions"] = {"temperature": 300.0, "energy_unit": "kJ/mol"}
         out[name] = make_density_interactive(df, _pair(), root / f"{name}.html", config=config)
+    # Two beads, each with its own numbering of the same four wells.
+    states_df = df.copy()
+    wells = np.arange(len(df)) % len(_WELLS)
+    states_df["bead_id"] = np.where(np.arange(len(df)) < len(df) // 2, "00", "01")
+    states_df["state_dihedral"] = pd.array(
+        [str(w if b == "00" else 3 - w) for w, b in zip(wells, states_df["bead_id"])],
+        dtype="string",
+    )
+    for name, show in (("states", False), ("states_on", True)):
+        out[name] = make_density_interactive(
+            states_df, _pair(), root / f"{name}.html",
+            config={
+                "clustering": {"groupby": ["bead_id"]},
+                "plots": {"interactive": {"embed_xyz_payload": True, "show_states": show}},
+            },
+        )
     out["highlight"] = make_density_interactive(
         _write_trajectory(root / "traj_elements.xyz", elements=_ELEMENTS),
         _pair(x_atoms=_X_ATOMS, y_atoms=_Y_ATOMS, x_dof_type="distance", y_dof_type="distance"),
@@ -278,6 +294,26 @@ class _Page:
             }"""
         )
 
+    def overlay_state(self) -> dict:
+        """State trace, annotations and controls, as the page shows them."""
+        return self.page.evaluate(
+            """() => {
+              const gd = document.getElementsByClassName('plotly-graph-div')[0];
+              const tr = gd._fullData[1];
+              // Plotly computes no z for a hidden trace.
+              const z = tr.z ? Array.from(tr.z, (row) => Array.from(row,
+                (v) => (v === null || Number.isNaN(v) ? null : v))) : null;
+              return {
+                visible: tr.visible,
+                z,
+                annotations: gd.layout.annotations || [],
+                pressed: document.getElementById('states-toggle').getAttribute('aria-pressed'),
+                groupHidden: document.getElementById('state-group').hidden,
+                groups: [...document.getElementById('state-group').options].map((o) => o.text),
+              };
+            }"""
+        )
+
     def page_data(self) -> dict:
         return self.page.evaluate("JSON.parse(document.getElementById('page-data').textContent)")
 
@@ -402,7 +438,7 @@ def test_theme_toggle_recolours_plot(open_page, pages):
     assert state["paper"] == "#1c2024"
 
 
-@pytest.mark.parametrize("variant", ["bin", "highlight", "fe"])
+@pytest.mark.parametrize("variant", ["bin", "highlight", "fe", "states_on"])
 def test_idle_page_does_not_redraw(open_page, pages, variant):
     page = open_page(pages[variant])
     redraws = page.page.evaluate(
@@ -664,3 +700,155 @@ def test_readout_shows_scaled_value_and_raw_count(open_page, pages):
     page.page.select_option("#fe-unit", "kT")
     page.wait_until("document.getElementById('preview-readout').innerText.includes('F (kT)')")
     assert f"count: {count}" in page.page.evaluate("document.getElementById('preview-readout').innerText")
+
+
+# ---------------------------------------------------------------------------
+# State overlay
+# ---------------------------------------------------------------------------
+
+
+def _expected_state_z(data: dict, group_index: int) -> list[list]:
+    nx, ny = data["header"]["bin_count_x"], data["header"]["bin_count_y"]
+    z = [[None] * nx for _ in range(ny)]
+    group = data["states"]["groups"][group_index]
+    for b, code in zip(group["bins"], group["states"]):
+        z[b // nx][b % nx] = code
+    return z
+
+
+def test_states_toggle_shows_overlay_and_labels(open_page, pages):
+    page = open_page(pages["states"])
+    data = page.page_data()
+    state = page.overlay_state()
+    assert state["visible"] is False and state["pressed"] == "false"
+    assert state["groups"] == ["bead 00", "bead 01"] and state["groupHidden"] is False
+    assert state["annotations"] and all(a["visible"] is False for a in state["annotations"])
+
+    page.page.click("#states-toggle")
+    page.wait_until("document.getElementsByClassName('plotly-graph-div')[0]._fullData[1].visible === true")
+    state = page.overlay_state()
+    assert state["pressed"] == "true"
+    assert state["z"] == _expected_state_z(data, 0)
+    assert all(a["visible"] is True for a in state["annotations"])
+
+    page.page.click("#states-toggle")
+    page.wait_until("document.getElementsByClassName('plotly-graph-div')[0]._fullData[1].visible === false")
+    assert page.overlay_state()["pressed"] == "false"
+    assert page.errors == []
+
+
+def test_state_group_switch_never_mixes_groups(open_page, pages):
+    page = open_page(pages["states_on"])
+    data = page.page_data()
+    initial = page.overlay_state()
+
+    page.page.select_option("#state-group", "1")
+    page.wait_until(
+        "document.getElementsByClassName('plotly-graph-div')[0].layout.annotations[0].text"
+        f" === {data['states']['labels'][data['states']['groups'][1]['centres'][0]['state']]!r}"
+    )
+    state = page.overlay_state()
+    assert state["z"] == _expected_state_z(data, 1)
+    assert state["z"] != initial["z"]  # the beads number the wells differently
+
+    # Back to the first group: the page rebuilds exactly what Python built.
+    page.page.select_option("#state-group", "0")
+    page.wait_until(
+        "document.getElementsByClassName('plotly-graph-div')[0].layout.annotations[0].text"
+        f" === {initial['annotations'][0]['text']!r}"
+    )
+    assert page.overlay_state() == initial
+    assert page.errors == []
+
+
+def test_overlay_does_not_capture_hover_or_clicks(open_page, pages):
+    page = open_page(pages["states_on"])
+    data = page.page_data()
+    z0, z1 = _expected_state_z(data, 0), _expected_state_z(data, 1)
+
+    def labelled_in_both(point):
+        xi, yi = (int(v) for v in point["key"].split("_"))
+        # Off-diagonal and asymmetric, so a swapped row/column index would show.
+        return (z0[yi][xi] is not None and z1[yi][xi] is not None
+                and z0[yi][xi] != z0[xi][yi] and z0[yi][xi] != z1[yi][xi])
+
+    target = next(p for p in page.bins()["full"] if labelled_in_both(p))
+    xi, yi = (int(v) for v in target["key"].split("_"))
+    page.click(target)
+    page.card_count_is(1)
+    assert page.state()["cards"] == [f"bin:{target['key']}"]
+    assert page.state()["status"] == f"Bin {target['key']}"
+
+    text = page.page.evaluate("document.getElementById('preview-readout').innerText")
+    labels = data["states"]["labels"]
+    assert f"state (bead 00): {labels[z0[yi][xi]]}" in text
+
+    page.page.select_option("#state-group", "1")
+    page.wait_until("document.getElementById('preview-readout').innerText.includes('bead 01')")
+    assert f"state (bead 01): {labels[z1[yi][xi]]}" in page.page.evaluate(
+        "document.getElementById('preview-readout').innerText"
+    )
+
+
+def test_theme_toggle_recolours_state_labels(open_page, pages):
+    page = open_page(pages["states_on"])
+    page.page.evaluate("document.documentElement.dataset.theme = 'light'")
+    page.page.click("#theme-toggle")
+    page.wait_until("document.documentElement.dataset.theme === 'dark'")
+    page.wait_until(
+        "document.getElementsByClassName('plotly-graph-div')[0].layout.annotations[0].bgcolor"
+        " === 'rgba(28, 32, 36, 0.75)'"
+    )
+    assert {a["bgcolor"] for a in page.overlay_state()["annotations"]} == {"rgba(28, 32, 36, 0.75)"}
+
+
+def test_page_without_states_has_no_state_controls(open_page, pages):
+    page = open_page(pages["bin"])
+    assert page.page.evaluate("document.getElementById('states-toggle')") is None
+    assert page.page.evaluate(
+        "document.getElementsByClassName('plotly-graph-div')[0]._fullData.length"
+    ) == 1
+
+
+
+def test_theme_toggle_swaps_map_colorscale(open_page, pages):
+    page = open_page(pages["bin"])
+    page.page.evaluate("document.documentElement.dataset.theme = 'light'")
+    scales = page.page_data()["scale"]["colorscales"]
+    assert scales["light"] != scales["dark"]
+    shown = "document.getElementsByClassName('plotly-graph-div')[0].data[0].colorscale"
+    assert page.page.evaluate(shown) == scales["light"]
+
+    for theme in ("dark", "light"):
+        page.page.click("#theme-toggle")
+        page.wait_until(f"{shown}[0][1] === '{scales[theme][0][1]}'")
+        assert page.page.evaluate(shown) == scales[theme], theme
+    assert page.errors == []
+
+
+def test_degree_ticks_follow_zoom(open_page, pages):
+    page = open_page(pages["bin"])
+    dtick = (
+        "(() => { const l = document.getElementsByClassName('plotly-graph-div')[0].layout;"
+        " return [l.xaxis.dtick, l.yaxis.dtick]; })()"
+    )
+    assert page.page.evaluate(dtick) == [60, 60]
+    labels = page.page.evaluate(
+        "[...document.querySelectorAll('.xtick text')].map((t) => t.textContent)"
+    )
+    assert labels == ["−180°", "−120°", "−60°", "0°", "60°", "120°", "180°"]
+
+    page.page.evaluate(
+        "Plotly.relayout(document.getElementsByClassName('plotly-graph-div')[0],"
+        " {'xaxis.range': [-30, 0], 'yaxis.range': [100, 190]})"
+    )
+    page.wait_until(f"{dtick}[0] === 5")
+    assert page.page.evaluate(dtick) == [5, 15]
+
+    page.page.evaluate(
+        "Plotly.relayout(document.getElementsByClassName('plotly-graph-div')[0],"
+        " {'xaxis.range': [-180, 180], 'yaxis.range': [-180, 180]})"
+    )
+    page.wait_until(f"{dtick}[0] === 60")
+    assert page.page.evaluate(dtick) == [60, 60]
+    assert page.errors == []

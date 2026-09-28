@@ -32,6 +32,7 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
           "free_energy": [[float | null]] # dimensionless -ln(P / P_max)
         },
         "modes": {"<mode>": {"label", "value_label", "z_format", "subtitle"}},
+        "colorscales": {"light": [[pos, color], ...], "dark": [...]},
         "energy_units": [{"key", "label", "k_B"}, ...]   # from src.units
       } | null,
       "axis_spec": {"x_col", "y_col"},
@@ -40,6 +41,14 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "bin_frame_metadata": {"<xi>_<yi>": {...}} | null,
       "bin_xyz_payloads": {"<xi>_<yi>": "<xyz text>"} | null,
       "frame_metadata": [{...}, ...] | null,
+      "states": {                         # null when the state column is absent
+        "state_col", "groupby": [str, ...], "labels": [str, ...],
+        "colors": [str, ...],             # one per label
+        "groups": [{"name", "keys", "bins": [int], "states": [int],
+                    "centres": [{"state", "x", "y", "frames"}]}, ...]
+      } | null,
+      "axis_ticks": {"steps": [float, ...], "max_intervals": int,
+                     "x": bool, "y": bool},  # true = degree ticks on that axis
       "axis_atoms": {                     # null when highlight_dof_atoms: false
         "x": {"name", "type", "atoms": [int, ...] | null},
         "y": {"name", "type", "atoms": [int, ...] | null}
@@ -51,7 +60,8 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "ui_state": {
         "theme": "auto" | "light" | "dark",
         "scale_mode": "log_counts" | "counts" | "free_energy",
-        "state_overlay_visible": false,   # seam for Slice 5
+        "state_overlay_visible": true | false,
+        "state_group": 0,                 # index into states.groups
         "temperature": float | null,      # K; null = none known yet
         "unit": "kT" | "kJ/mol" | ...,    # key of scale.energy_units
         "pinned_bins": []                 # seam for later slices
@@ -74,6 +84,18 @@ temperature and the energy unit without re-running the pipeline. In
 free-energy mode the map shows ``F = k_B T · free_energy`` in
 ``ui_state.unit`` (``kT`` = dimensionless, ignores the temperature).
 ``modes.free_energy.value_label`` is null: the page builds it from the unit.
+``colorscales`` holds the map's colour scale for each theme; the page swaps
+them when the theme changes (see ``_theme_colorscale``).
+
+``axis_ticks`` marks the axes measured in degrees. Those get ticks on
+multiples of the smallest step in ``steps`` that leaves at most
+``max_intervals`` intervals across the visible range; the page re-picks the
+step after each zoom or pan (see ``_degree_tick_step``).
+
+``states`` is the per-bin majority state from ``src.states.build_bin_state_overlay``,
+one map per clustering group (``clustering.groupby``): labels are not
+unified across groups, so the page shows one group at a time. ``bins`` are
+flat indices ``yi * n_bins_x + xi``; ``states`` index ``labels``.
 
 Public API
 ----------
@@ -96,6 +118,7 @@ from collections.abc import Iterable
 
 from src.density import compute_2d_histogram, population_free_energy
 from src.models import CoordinatePair
+from src.states import build_bin_state_overlay, resolve_state_groupby
 from src.units import (
     energy_unit_table,
     thermal_energy,
@@ -220,6 +243,7 @@ _PLOTLY_THEME_COLORS = {
         "grid_color": "#d8dce1",
         "axis_x_color": "#d55e00",
         "axis_y_color": "#0072b2",
+        "state_label_bg": "rgba(255, 255, 255, 0.75)",
     },
     "dark": {
         "paper_bgcolor": "#1c2024",
@@ -228,8 +252,184 @@ _PLOTLY_THEME_COLORS = {
         "grid_color": "#33393f",
         "axis_x_color": "#f0894a",
         "axis_y_color": "#56b4e9",
+        "state_label_bg": "rgba(28, 32, 36, 0.75)",
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Theme colour scales for the density map
+# ---------------------------------------------------------------------------
+
+# Minimum contrast (WCAG ratio) between each end of the map's colour scale and
+# the theme's plot background. Light: only near-white ends are trimmed, so
+# standard viridis stays exactly viridis. Dark: ends that sink into the dark
+# background are trimmed. The direction is kept, so bright means the same in
+# both themes.
+_THEME_MIN_CONTRAST = {"light": 1.25, "dark": 2.0}
+_TRIMMED_COLORSCALE_STOPS = 21
+
+
+def _rgb(color: str) -> tuple[float, float, float]:
+    """``#rrggbb`` or ``rgb(r, g, b)`` → 0–255 floats."""
+    import plotly.colors as pc  # noqa: PLC0415
+
+    if color.startswith("#"):
+        return tuple(float(v) for v in pc.hex_to_rgb(color))  # type: ignore[return-value]
+    return tuple(float(v) for v in pc.unlabel_rgb(color))  # type: ignore[return-value]
+
+
+def _contrast_ratio(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """WCAG contrast ratio of two 0–255 RGB colours (1 = identical, 21 = max)."""
+
+    def luminance(rgb: tuple[float, float, float]) -> float:
+        channels = [v / 255.0 for v in rgb]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _named_colorscale(name: object, source: str) -> list[list]:
+    """Plotly colour scale *name* (``_r`` = reversed) as ``[[pos, color], ...]``.
+
+    Raises
+    ------
+    ValueError
+        If Plotly does not know *name*; *source* names the config key.
+    """
+    import plotly.colors as pc  # noqa: PLC0415
+    from _plotly_utils.exceptions import PlotlyError  # noqa: PLC0415
+
+    try:
+        scale = pc.get_colorscale(str(name))
+    except PlotlyError as exc:
+        raise ValueError(f"{source}: unknown Plotly colour scale {name!r}.") from exc
+    return [[float(pos), color] for pos, color in scale]
+
+
+def _theme_colorscale(name: str, theme: str) -> list[list]:
+    """Colour scale *name* with any end that blends into *theme*'s background trimmed.
+
+    Only the two ends are trimmed, to the first / last point (of 101 samples)
+    that reaches ``_THEME_MIN_CONTRAST[theme]`` against the plot background.
+    A scale that needs no trimming is returned unchanged.
+    """
+    import plotly.colors as pc  # noqa: PLC0415
+
+    scale = _named_colorscale(name, "density colormap")
+    background = _rgb(_PLOTLY_THEME_COLORS[theme]["plot_bgcolor"])
+    samples = np.linspace(0.0, 1.0, 101)
+    visible = [
+        _contrast_ratio(_rgb(color), background) >= _THEME_MIN_CONTRAST[theme]
+        for color in pc.sample_colorscale(scale, samples)
+    ]
+    if not any(visible):
+        return scale
+    # Only the ends matter: a pale middle (e.g. jet's yellow) is kept.
+    first = visible.index(True)
+    last = len(visible) - 1 - visible[::-1].index(True)
+    if (first, last) == (0, len(visible) - 1) or first >= last:
+        return scale
+    kept = np.linspace(samples[first], samples[last], _TRIMMED_COLORSCALE_STOPS)
+    colors = pc.sample_colorscale(scale, kept)
+    n = _TRIMMED_COLORSCALE_STOPS - 1
+    return [[i / n, color] for i, color in enumerate(colors)]
+
+
+# ---------------------------------------------------------------------------
+# Degree axis ticks
+# ---------------------------------------------------------------------------
+
+# Tick steps that read naturally in degrees; embedded so the page picks
+# steps the same way after a zoom.
+_DEGREE_TICK_STEPS = (1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 45.0, 60.0, 90.0)
+_DEGREE_TICK_MAX_INTERVALS = 6
+_DEGREE_DOF_TYPES = frozenset({"dihedral", "angle"})
+
+
+def _is_degree_axis(dof_type: str | None, label: str) -> bool:
+    """True for dihedral / angle DoFs; without a DoF type, when the label says (°)."""
+    if dof_type is not None:
+        return dof_type in _DEGREE_DOF_TYPES
+    return "(°)" in label
+
+
+def _degree_tick_step(span: float) -> float:
+    """Smallest degree-friendly step giving at most _DEGREE_TICK_MAX_INTERVALS
+    intervals over *span* (mirrors degreeTickStep in viewer.js)."""
+    for step in _DEGREE_TICK_STEPS:
+        if abs(span) / step <= _DEGREE_TICK_MAX_INTERVALS:
+            return step
+    return _DEGREE_TICK_STEPS[-1]
+
+
+def _degree_axis_ticks(axis_range: tuple[float, float]) -> dict:
+    """Plotly axis settings for degree ticks over *axis_range*."""
+    return {
+        "tickmode": "linear",
+        "tick0": 0,
+        "dtick": _degree_tick_step(axis_range[1] - axis_range[0]),
+        "ticksuffix": "°",
+    }
+
+
+# ---------------------------------------------------------------------------
+# State overlay
+# ---------------------------------------------------------------------------
+
+# Categorical state colours (Plotly's D3 set); they repeat after ten states.
+_STATE_COLORS = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
+# A tint over the density, not a replacement for it.
+_STATE_OPACITY = 0.35
+
+_STATE_CONTROLS_HTML = (
+    '<span class="ca-state-controls">'
+    '<button id="states-toggle" type="button" class="ca-btn" aria-pressed="false">States</button>'
+    '<select id="state-group" aria-label="State group" hidden></select>'
+    "</span>"
+)
+
+
+def _state_colorscale(n_labels: int) -> list[list]:
+    """Stepped colourscale: z = label index i maps to _STATE_COLORS[i]."""
+    if n_labels == 0:
+        return [[0.0, "rgba(0,0,0,0)"], [1.0, "rgba(0,0,0,0)"]]
+    stops = []
+    for i in range(n_labels):
+        color = _STATE_COLORS[i % len(_STATE_COLORS)]
+        stops += [[i / n_labels, color], [(i + 1) / n_labels, color]]
+    return stops
+
+
+def _state_grid(group: dict, n_bins_y: int, n_bins_x: int) -> np.ndarray:
+    """Dense label-index grid of one group (rows = y bins); NaN = no state."""
+    grid = np.full(n_bins_y * n_bins_x, np.nan)
+    grid[np.asarray(group["bins"], dtype=np.int64)] = group["states"]
+    return grid.reshape(n_bins_y, n_bins_x)
+
+
+def _state_annotations(states: dict, group: dict, visible: bool, bgcolor: str) -> list[dict]:
+    """State-name labels at each state's centre (mirrors stateAnnotations in viewer.js)."""
+    return [
+        {
+            "x": centre["x"],
+            "y": centre["y"],
+            "text": states["labels"][centre["state"]],
+            "showarrow": False,
+            "font": {"size": 12},
+            "bgcolor": bgcolor,
+            "bordercolor": states["colors"][centre["state"]],
+            "borderwidth": 1,
+            "borderpad": 2,
+            "visible": visible,
+        }
+        for centre in group["centres"]
+    ]
 
 
 def _load_asset(name: str) -> str:
@@ -268,15 +468,16 @@ def _resolve_interactive_config(cfg: dict) -> dict:
     Raises
     ------
     ValueError
-        If ``hover_preview`` or ``highlight_dof_atoms`` is not a bool,
+        If ``hover_preview``, ``highlight_dof_atoms`` or ``show_states`` is not a bool,
         ``max_pinned`` is not an integer >= 1, ``default_scale`` is not
-        a known scale mode, or ``free_energy`` is not a mapping.
+        a known scale mode, or ``free_energy`` / ``theme_colorscales`` is
+        not a mapping.
     """
     interactive_cfg = (cfg.get("plots", {}) or {}).get("interactive", {}) or {}
 
     flags = {}
-    for key in ("hover_preview", "highlight_dof_atoms"):
-        value = interactive_cfg.get(key, True)
+    for key, default in (("hover_preview", True), ("highlight_dof_atoms", True), ("show_states", False)):
+        value = interactive_cfg.get(key, default)
         if not isinstance(value, bool):
             raise ValueError(f"plots.interactive.{key} must be true or false, got {value!r}.")
         flags[key] = value
@@ -303,6 +504,13 @@ def _resolve_interactive_config(cfg: dict) -> dict:
             f"'unit', got {free_energy!r}."
         )
 
+    theme_colorscales = interactive_cfg.get("theme_colorscales") or {}
+    if not isinstance(theme_colorscales, dict) or set(theme_colorscales) - {"light", "dark"}:
+        raise ValueError(
+            "plots.interactive.theme_colorscales must be a mapping with 'light' and/or "
+            f"'dark' keys, got {theme_colorscales!r}."
+        )
+
     return {
         "include_plotlyjs": interactive_cfg.get("include_plotlyjs", True),
         "include_3dmol": interactive_cfg.get("include_3dmol", "inline"),
@@ -311,9 +519,11 @@ def _resolve_interactive_config(cfg: dict) -> dict:
         "alignment": interactive_cfg.get("alignment"),
         "hover_preview": flags["hover_preview"],
         "highlight_dof_atoms": flags["highlight_dof_atoms"],
+        "show_states": flags["show_states"],
         "max_pinned": max_pinned,
         "default_scale": default_scale,
         "free_energy": free_energy,
+        "theme_colorscales": theme_colorscales,
     }
 
 
@@ -494,6 +704,7 @@ def render_density_page(page_data: dict) -> str:
         page_data_json=page_data_json,
         plot_fragment=page_data.get("plot_html", ""),
         threedmol_tag=threedmol_tag,
+        state_controls=_STATE_CONTROLS_HTML if state.get("states") else "",
         inline_css=_inline_asset("viewer.css", "style"),
         inline_js=_inline_asset("viewer.js", "script"),
     )
@@ -541,8 +752,12 @@ def make_density_interactive(
         ``interactive.embed_xyz_payload``, ``interactive.theme``,
         ``interactive.alignment``, ``interactive.hover_preview``,
         ``interactive.highlight_dof_atoms``, ``interactive.max_pinned``,
-        ``interactive.default_scale`` and ``interactive.free_energy``
-        (``temperature`` / ``unit``, falling back to ``transitions.*``).
+        ``interactive.default_scale``, ``interactive.free_energy``
+        (``temperature`` / ``unit``, falling back to ``transitions.*``) and
+        ``interactive.show_states`` and ``interactive.theme_colorscales``
+        (``light`` / ``dark`` Plotly scale names; unset = the density
+        colormap trimmed per theme). ``clustering.groupby`` names the groups
+        the state overlay is split into (one map per group).
 
     Returns
     -------
@@ -555,8 +770,10 @@ def make_density_interactive(
         If the feature columns are not found in ``df``,
         ``hover_preview`` / ``highlight_dof_atoms`` / ``max_pinned`` are
         invalid, an axis atom index is outside the structures' atom count,
-        ``default_scale`` is unknown, or the free-energy temperature / unit
-        is invalid.
+        ``default_scale`` is unknown, the free-energy temperature / unit
+        is invalid, ``show_states`` is not a bool, a colour-scale name is
+        unknown, or a ``clustering.groupby``
+        column is missing while the state column is present.
     """
     import plotly.graph_objects as go  # noqa: PLC0415
 
@@ -620,11 +837,23 @@ def make_density_interactive(
     n_bins_x = len(x_edges) - 1
     n_bins_y = len(y_edges) - 1
 
+    # One colour scale per theme: explicit config names are used as given,
+    # otherwise the density colormap is trimmed to suit each background.
+    colorscales = {}
+    for theme_name in ("light", "dark"):
+        explicit = interactive_cfg["theme_colorscales"].get(theme_name)
+        colorscales[theme_name] = (
+            _named_colorscale(explicit, f"plots.interactive.theme_colorscales.{theme_name}")
+            if explicit is not None
+            else _theme_colorscale(colorscale, theme_name)
+        )
+    theme = interactive_cfg["theme"]
+
     heatmap = go.Heatmap(
         z=Z,
         x=x_centres,
         y=y_centres,
-        colorscale=colorscale,
+        colorscale=colorscales["dark" if theme == "dark" else "light"],
         colorbar={"title": colorbar_title},
         # Hover must fire over empty bins so the preview can say "no frames".
         hoverongaps=True,
@@ -633,7 +862,6 @@ def make_density_interactive(
         ),
     )
 
-    theme = interactive_cfg["theme"]
     plotly_theme = _PLOTLY_THEME_COLORS["dark" if theme == "dark" else "light"]
 
     # Axis titles take the colour of their highlighted atoms in the 3D views.
@@ -644,18 +872,60 @@ def make_density_interactive(
         if highlight and atoms:
             axis_titles[axis]["font"] = {"color": plotly_theme[f"axis_{axis}_color"]}
 
-    fig = go.Figure(data=[heatmap])
+    # State overlay: one map per clustering group; the page starts on the first.
+    states = build_bin_state_overlay(
+        df, pair, x_edges, y_edges, groupby=resolve_state_groupby(cfg)
+    )
+    traces = [heatmap]
+    state_annotations: list[dict] = []
+    state_group = 0
+    show_states = interactive_cfg["show_states"]
+    if states is not None:
+        n_labels = len(states["labels"])
+        states["colors"] = [_STATE_COLORS[i % len(_STATE_COLORS)] for i in range(n_labels)]
+        group = states["groups"][state_group] if states["groups"] else {"bins": [], "states": [], "centres": []}
+        traces.append(go.Heatmap(
+            z=_state_grid(group, n_bins_y, n_bins_x),
+            x=x_centres,
+            y=y_centres,
+            zmin=-0.5,
+            zmax=max(n_labels, 1) - 0.5,
+            colorscale=_state_colorscale(n_labels),
+            showscale=False,
+            opacity=_STATE_OPACITY,
+            # Hover and clicks go to the density trace underneath.
+            hoverinfo="skip",
+            visible=show_states,
+            name="states",
+        ))
+        state_annotations = _state_annotations(
+            states, group, show_states, plotly_theme["state_label_bg"]
+        )
+
+    degree_axes = {
+        "x": _is_degree_axis(pair.x_dof_type, pair.x_label),
+        "y": _is_degree_axis(pair.y_dof_type, pair.y_label),
+    }
+    axis_ticks = {
+        axis: _degree_axis_ticks(axis_range) if degree_axes[axis] else {}
+        for axis, axis_range in (("x", x_range), ("y", y_range))
+    }
+
+    fig = go.Figure(data=traces)
     fig.update_layout(
+        annotations=state_annotations,
         title=pair.title,
         xaxis={
             "title": axis_titles["x"],
             "range": list(x_range),
             "gridcolor": plotly_theme["grid_color"],
+            **axis_ticks["x"],
         },
         yaxis={
             "title": axis_titles["y"],
             "range": list(y_range),
             "gridcolor": plotly_theme["grid_color"],
+            **axis_ticks["y"],
         },
         width=700,
         height=600,
@@ -730,6 +1000,7 @@ def make_density_interactive(
                 "free_energy": _grid_to_json(grids["free_energy"]),
             },
             "modes": _SCALE_MODES,
+            "colorscales": colorscales,
             "energy_units": energy_unit_table(),
         },
         "axis_spec": {"x_col": x_col, "y_col": y_col},
@@ -737,6 +1008,12 @@ def make_density_interactive(
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
         "frame_metadata": frame_metadata,
+        "states": states,
+        "axis_ticks": {
+            "steps": list(_DEGREE_TICK_STEPS),
+            "max_intervals": _DEGREE_TICK_MAX_INTERVALS,
+            **degree_axes,
+        },
         "axis_atoms": axis_atoms,
         "settings": {
             "hover_preview": interactive_cfg["hover_preview"],
@@ -745,7 +1022,8 @@ def make_density_interactive(
         "ui_state": {
             "theme": theme,
             "scale_mode": scale_mode,
-            "state_overlay_visible": False,
+            "state_overlay_visible": show_states if states is not None else False,
+            "state_group": state_group,
             "temperature": temperature,
             "unit": unit,
             "pinned_bins": [],

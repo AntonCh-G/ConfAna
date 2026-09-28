@@ -11,6 +11,8 @@ from src.states import (
     _resolve_pair_params,
     assign_conformer_states,
     assign_conformer_states_from_config,
+    build_bin_state_overlay,
+    resolve_state_groupby,
 )
 
 
@@ -806,3 +808,111 @@ def test_clustering_with_na_bead_id():
         non_noise = result[col][result[col].notna() & (result[col] != "noise")]
         assert len(non_noise) > 0, f"{col}: no frames assigned — dropna bug likely"
         assert non_noise.nunique() >= 2, f"{col}: expected ≥2 clusters"
+
+
+# ---------------------------------------------------------------------------
+# build_bin_state_overlay / resolve_state_groupby
+# ---------------------------------------------------------------------------
+
+
+def _overlay_pair(periodic: bool = False) -> CoordinatePair:
+    lo, hi = (-180.0, 180.0) if periodic else (0.0, 3.0)
+    return CoordinatePair(
+        name="p", x_col="x", y_col="y", x_label="x", y_label="y", title="t",
+        x_domain=(lo, hi), y_domain=(lo, hi), periodic=periodic,
+    )
+
+
+def _overlay_df(rows: list[tuple]) -> pd.DataFrame:
+    """rows = (x, y, state, bead_id)."""
+    return pd.DataFrame({
+        "x": [r[0] for r in rows],
+        "y": [r[1] for r in rows],
+        "state_p": pd.array([r[2] for r in rows], dtype="string"),
+        "bead_id": [r[3] for r in rows],
+    })
+
+
+_EDGES = np.linspace(0.0, 3.0, 4)  # 3 bins per axis: flat index = yi * 3 + xi
+
+
+def _bin_states(group: dict, labels: list[str]) -> dict[int, str]:
+    return {b: labels[s] for b, s in zip(group["bins"], group["states"])}
+
+
+def test_overlay_none_without_state_column():
+    df = _overlay_df([(0.5, 0.5, "0", "00")]).drop(columns="state_p")
+    assert build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES) is None
+
+
+def test_overlay_majority_noise_and_natural_ties():
+    df = _overlay_df([
+        (0.5, 0.5, "1", "00"), (0.5, 0.5, "1", "00"), (0.5, 0.5, "noise", "00"),  # bin 0 → "1"
+        (1.5, 0.5, "noise", "00"), (1.5, 0.5, "noise", "00"), (1.5, 0.5, "2", "00"),  # bin 1 → none
+        (2.5, 0.5, "10", "00"), (2.5, 0.5, "2", "00"),  # bin 2: tie → "2" before "10"
+        (0.5, 1.5, "2", "00"), (0.5, 1.5, None, "00"),  # bin 3: tie with NA → real state
+        (0.5, 2.5, None, "00"),  # bin 6: NA only → none
+    ])
+    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    assert overlay["labels"] == ["1", "2", "10"]
+    assert overlay["groupby"] == []
+    (group,) = overlay["groups"]
+    assert group["name"] == "all frames"
+    assert _bin_states(group, overlay["labels"]) == {0: "1", 2: "2", 3: "2"}
+
+
+def test_overlay_keeps_groups_separate():
+    # Label "0" is a different region in each bead: never pooled.
+    df = _overlay_df([
+        (0.5, 0.5, "0", "00"), (0.5, 0.5, "0", "00"), (2.5, 2.5, "1", "00"),
+        (2.5, 2.5, "0", "01"), (0.5, 0.5, "1", "01"), (0.5, 0.5, "1", "01"), (0.5, 0.5, "1", "01"),
+    ])
+    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES, groupby=["bead_id"])
+    labels = overlay["labels"]
+    g00, g01 = overlay["groups"]
+    assert (g00["name"], g00["keys"]) == ("bead 00", {"bead_id": "00"})
+    assert (g01["name"], g01["keys"]) == ("bead 01", {"bead_id": "01"})
+    assert _bin_states(g00, labels) == {0: "0", 8: "1"}
+    assert _bin_states(g01, labels) == {0: "1", 8: "0"}
+
+
+def test_overlay_bins_match_histogram2d():
+    rng = np.random.default_rng(1)
+    x = rng.uniform(-0.5, 3.5, 500)
+    y = rng.uniform(-0.5, 3.5, 500)
+    x[:5] = 3.0  # right edge belongs to the last bin
+    df = _overlay_df([(a, b, "0", "00") for a, b in zip(x, y)])
+    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    H, _, _ = np.histogram2d(x, y, bins=[_EDGES, _EDGES])
+    occupied = {int(yi * 3 + xi) for xi, yi in zip(*np.nonzero(H))}
+    assert set(overlay["groups"][0]["bins"]) == occupied
+
+
+def test_overlay_centres_are_population_weighted():
+    df = _overlay_df([(0.5, 0.5, "0", "00"), (0.5, 0.5, "0", "00"), (2.0, 2.0, "0", "00")])
+    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    (centre,) = overlay["groups"][0]["centres"]
+    assert centre == {"state": 0, "x": pytest.approx(1.0), "y": pytest.approx(1.0), "frames": 3}
+
+
+def test_overlay_centres_wrap_on_periodic_axes():
+    edges = np.linspace(-180.0, 180.0, 13)
+    df = _overlay_df([(170.0, 0.0, "0", "00"), (-170.0, 0.0, "0", "00")])
+    overlay = build_bin_state_overlay(df, _overlay_pair(periodic=True), edges, edges)
+    (centre,) = overlay["groups"][0]["centres"]
+    assert abs(centre["x"]) == pytest.approx(180.0)
+
+
+def test_overlay_missing_groupby_column_raises():
+    df = _overlay_df([(0.5, 0.5, "0", "00")])
+    with pytest.raises(ValueError, match="trajectory_id"):
+        build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES, groupby=["trajectory_id"])
+
+
+def test_resolve_state_groupby_reads_clustering_section():
+    assert resolve_state_groupby({"clustering": {"groupby": ["trajectory_id", "bead_id"]}}) == [
+        "trajectory_id", "bead_id",
+    ]
+    assert resolve_state_groupby({"groupby": ["bead_id"]}) == ["bead_id"]
+    assert resolve_state_groupby({"clustering": {"groupby": []}}) is None
+    assert resolve_state_groupby({}) is None

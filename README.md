@@ -238,6 +238,16 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   to `cdn` to load from a CDN instead (requires internet, produces a smaller file).
 - Theme follows the browser's OS-level light/dark preference by default
   (`interactive.theme: auto`); set to `light` or `dark` to force it, or use the in-page toggle.
+- The map's colour scale suits each theme. Its direction never changes (bright means
+  the same in both), but an end that would blend into the background is trimmed: on
+  white, a near-white end (contrast below 1.25:1); on dark, an end below 2:1 contrast
+  with the dark background. Standard viridis on white is unchanged; on dark its darkest
+  purples are dropped. Set `interactive.theme_colorscales: {light: <name>, dark: <name>}`
+  to use given Plotly scales (e.g. `plasma`, `viridis_r`) unchanged instead.
+- Axes measured in degrees (dihedral or angle DoFs; for pairs without a DoF type, axes
+  whose label contains `(°)`) get ticks on multiples of 1, 2, 5, 10, 15, 30, 45, 60 or 90°,
+  whichever gives at most six intervals, e.g. 60° steps across −180…180° and 30° across
+  0…180°. Zooming or panning re-picks the step for the visible range.
 - The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
   (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or
@@ -264,4 +274,15 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
     temperature from either, the page opens in `kT` with an empty temperature field.
     An unknown unit or a temperature ≤ 0 stops the build with an error.
   - The `k_B` values per unit live in one table in `src/units.py`, which the page embeds.
+- When the coordinate table has the pair's state column (`state_<pair>`), a `States`
+  button tints each bin with its majority state (35 % opacity over the density) and puts
+  each state's name at its population-weighted centre (circular mean on periodic axes).
+  The side panel names the hovered bin's state. Noise or unset frames winning a bin leave
+  it untinted. Without the state column the button is not shown.
+  `interactive.show_states` (default `false`) sets whether the overlay is on at opening.
+  - States are clustered separately per `clustering.groupby` group (e.g. per bead), and
+    their labels are not matched across groups: state `0` of bead 00 can be a different
+    region from state `0` of bead 01. The overlay therefore never pools groups. It shows
+    one group at a time, chosen from a dropdown next to the button (hidden when there is
+    one group).
 - XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.
