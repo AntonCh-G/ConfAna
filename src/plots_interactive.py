@@ -53,6 +53,9 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
         "x": {"name", "type", "atoms": [int, ...] | null},
         "y": {"name", "type", "atoms": [int, ...] | null}
       } | null,
+      "navigation": {                     # null when no sibling pages are given
+        "pairs": [{"name", "title", "filename", "current": bool}, ...]
+      } | null,
       "settings": {
         "hover_preview": true | false,    # live hover preview in the side panel
         "max_pinned": 15                  # pinned cards; oldest evicted beyond this
@@ -78,6 +81,11 @@ DoF definitions (``CoordinatePair.x_atoms`` / ``y_atoms``). Indices are
 0-based file indices, as in config; ``name`` is the DoF column and ``type``
 the DoF type. ``atoms`` is null for DoF types without atoms (collective,
 external). The 3D views colour these atoms and the axis titles to match.
+
+``navigation`` lists every coordinate-pair page of the same run, in the
+order the caller passes them, each with the file name of its page in the same
+folder; ``current`` marks this page. The header renders them as links when
+there are at least two (see ``renderPairNav`` in viewer.js).
 
 ``scale`` holds every colour-scale mode, so the page switches modes, the
 temperature and the energy unit without re-running the pipeline. In
@@ -651,6 +659,77 @@ def _build_axis_atoms(pair: CoordinatePair, atom_counts: Iterable[int]) -> dict:
     return axes
 
 
+def _build_navigation(pair: CoordinatePair, siblings: Iterable[dict] | None) -> dict | None:
+    """Return the ``navigation`` page-data block for *pair*.
+
+    Parameters
+    ----------
+    pair:
+        Coordinate pair of this page; its ``name`` must appear in *siblings*,
+        so the page can mark itself as the current one.
+    siblings:
+        Every coordinate-pair page of the same run, in the order they should
+        appear, as ``{"name", "filename", "title"}`` mappings (``title``
+        optional, defaulting to the name). ``filename`` is a plain file name:
+        the pages link to each other inside one folder. ``None`` or an empty
+        list means no navigation.
+
+    Raises
+    ------
+    ValueError
+        If an entry is not a mapping, ``name`` / ``filename`` is not a
+        non-empty string, a filename carries a directory part, two entries
+        share a name, or *pair* is not among the entries.
+    """
+    if siblings is None:
+        return None
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for raw in siblings:
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': sibling page entry must be a mapping "
+                f"with 'name' and 'filename', got {raw!r}."
+            )
+        for key in ("name", "filename"):
+            value = raw.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Coordinate pair '{pair.name}': sibling page entry {raw!r} needs a "
+                    f"non-empty string '{key}'."
+                )
+        name = raw["name"]
+        filename = raw["filename"]
+        if "/" in filename or "\\" in filename or Path(filename).name != filename:
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': sibling page filename {filename!r} must be "
+                "a plain file name; the pages link to each other inside one folder."
+            )
+        if name in seen:
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': duplicate sibling page name {name!r}."
+            )
+        seen.add(name)
+        entries.append(
+            {
+                "name": name,
+                "title": str(raw.get("title") or name),
+                "filename": filename,
+                "current": name == pair.name,
+            }
+        )
+
+    if not entries:
+        return None
+    if not any(entry["current"] for entry in entries):
+        raise ValueError(
+            f"Coordinate pair '{pair.name}' is not among the sibling pages "
+            f"{sorted(seen)}; pass every pair of the run, including this one."
+        )
+    return {"pairs": entries}
+
+
 # ---------------------------------------------------------------------------
 # Page builder
 # ---------------------------------------------------------------------------
@@ -720,6 +799,7 @@ def make_density_interactive(
     pair: CoordinatePair,
     outpath: str | Path,
     config: dict | None = None,
+    siblings: Iterable[dict] | None = None,
 ) -> Path:
     """Save a standalone interactive HTML density plot.
 
@@ -758,6 +838,12 @@ def make_density_interactive(
         (``light`` / ``dark`` Plotly scale names; unset = the density
         colormap trimmed per theme). ``clustering.groupby`` names the groups
         the state overlay is split into (one map per group).
+    siblings:
+        Optional list of the coordinate-pair pages written in the same run, as
+        ``{"name", "filename", "title"}`` mappings (``title`` optional). The
+        header links to them, so the reader can jump between the pages of
+        different coordinate pairs. Filenames are plain file names in the
+        same folder as *outpath*, and the list must contain ``pair`` itself.
 
     Returns
     -------
@@ -772,8 +858,9 @@ def make_density_interactive(
         invalid, an axis atom index is outside the structures' atom count,
         ``default_scale`` is unknown, the free-energy temperature / unit
         is invalid, ``show_states`` is not a bool, a colour-scale name is
-        unknown, or a ``clustering.groupby``
-        column is missing while the state column is present.
+        unknown, a ``siblings`` entry is malformed or omits ``pair``, or a
+        ``clustering.groupby`` column is missing while the state column is
+        present.
     """
     import plotly.graph_objects as go  # noqa: PLC0415
 
@@ -1015,6 +1102,7 @@ def make_density_interactive(
             **degree_axes,
         },
         "axis_atoms": axis_atoms,
+        "navigation": _build_navigation(pair, siblings),
         "settings": {
             "hover_preview": interactive_cfg["hover_preview"],
             "max_pinned": interactive_cfg["max_pinned"],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +18,17 @@ from src.cli import cli
 # ---------------------------------------------------------------------------
 # Helpers — minimal config + fixture data
 # ---------------------------------------------------------------------------
+
+
+def _page_data(content: str) -> dict:
+    """Extract and parse the embedded ``#page-data`` JSON block of an HTML page."""
+    match = re.search(
+        r'<script id="page-data" type="application/json">(.*?)</script>',
+        content,
+        re.DOTALL,
+    )
+    assert match, "no #page-data script block found in content"
+    return json.loads(match.group(1))
 
 
 def _write_minimal_config(tmp_path: Path) -> Path:
@@ -241,3 +254,23 @@ def test_build_interactive_creates_extra_pair_outputs(tmp_path):
     assert result.exit_code == 0, result.output
     assert (tmp_path / "outputs" / "plots" / "density_dihedral.html").exists()
     assert (tmp_path / "outputs" / "plots" / "density_dihedrals_igor.html").exists()
+
+
+def test_build_interactive_links_pages_to_each_other(tmp_path):
+    """Every page lists all pair pages and marks itself as the current one."""
+    _write_minimal_xyz(tmp_path / "traj.xyz", n_frames=5, n_atoms=9)
+    config_path = _write_minimal_config(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["build-interactive", "--config", str(config_path)])
+    assert result.exit_code == 0, result.output
+
+    out = tmp_path / "outputs" / "plots"
+    for name in ("dihedral", "dihedrals_igor"):
+        data = _page_data((out / f"density_{name}.html").read_text(encoding="utf-8"))
+        pairs = data["navigation"]["pairs"]
+        assert [p["filename"] for p in pairs] == [
+            "density_dihedral.html",
+            "density_dihedrals_igor.html",
+        ]
+        assert [p["name"] for p in pairs if p["current"]] == [name]

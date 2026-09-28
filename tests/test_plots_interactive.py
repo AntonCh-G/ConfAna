@@ -1127,3 +1127,94 @@ def test_plane_axes_get_30_degree_ticks(tmp_path):
     make_density_interactive(_make_angle_df(), _plane_pair(), outpath)
     _, layout = _plot_figure(outpath.read_text(encoding="utf-8"))
     assert layout["xaxis"]["dtick"] == 30 and layout["yaxis"]["dtick"] == 30
+
+
+# ---------------------------------------------------------------------------
+# Slice 6 — navigation between coordinate pairs
+# ---------------------------------------------------------------------------
+
+
+def _siblings() -> list[dict]:
+    return [
+        {"name": "plane", "title": "Plane density", "filename": "density_plane.html"},
+        {"name": "dihedral", "title": "Dihedral density", "filename": "density_dihedral.html"},
+    ]
+
+
+def test_make_density_interactive_embeds_sibling_pair_links(tmp_path):
+    outpath = tmp_path / "density_plane.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath, siblings=_siblings())
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["navigation"]["pairs"] == [
+        {
+            "name": "plane",
+            "title": "Plane density",
+            "filename": "density_plane.html",
+            "current": True,
+        },
+        {
+            "name": "dihedral",
+            "title": "Dihedral density",
+            "filename": "density_dihedral.html",
+            "current": False,
+        },
+    ]
+
+
+def test_make_density_interactive_marks_the_current_pair(tmp_path):
+    outpath = tmp_path / "density_dihedral.html"
+    make_density_interactive(_make_angle_df(), _dihedral_pair(), outpath, siblings=_siblings())
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    current = [p["name"] for p in data["navigation"]["pairs"] if p["current"]]
+    assert current == ["dihedral"]
+
+
+def test_make_density_interactive_page_has_nav_container(tmp_path):
+    outpath = tmp_path / "density_plane.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath, siblings=_siblings())
+    assert 'id="pair-nav"' in outpath.read_text(encoding="utf-8")
+
+
+def test_make_density_interactive_sibling_title_defaults_to_name(tmp_path):
+    outpath = tmp_path / "density_plane.html"
+    make_density_interactive(
+        _make_angle_df(),
+        _plane_pair(),
+        outpath,
+        siblings=[{"name": "plane", "filename": "density_plane.html"}],
+    )
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["navigation"]["pairs"][0]["title"] == "plane"
+
+
+@pytest.mark.parametrize("siblings", [None, []])
+def test_make_density_interactive_navigation_absent_without_siblings(tmp_path, siblings):
+    outpath = tmp_path / "density_plane.html"
+    make_density_interactive(_make_angle_df(), _plane_pair(), outpath, siblings=siblings)
+    assert _page_data(outpath.read_text(encoding="utf-8"))["navigation"] is None
+
+
+@pytest.mark.parametrize(
+    ("siblings", "message"),
+    [
+        ([{"name": "plane"}], "non-empty string 'filename'"),
+        ([{"filename": "density_plane.html"}], "non-empty string 'name'"),
+        ([{"name": "plane", "filename": ""}], "non-empty string 'filename'"),
+        (["density_plane.html"], "must be a mapping"),
+        ([{"name": "plane", "filename": "sub/density_plane.html"}], "plain file name"),
+        ([{"name": "plane", "filename": "/abs/density_plane.html"}], "plain file name"),
+        (
+            [
+                {"name": "plane", "filename": "density_plane.html"},
+                {"name": "plane", "filename": "other.html"},
+            ],
+            "duplicate sibling page name",
+        ),
+        ([{"name": "dihedral", "filename": "density_dihedral.html"}], "is not among the sibling"),
+    ],
+)
+def test_make_density_interactive_invalid_siblings_raise(tmp_path, siblings, message):
+    with pytest.raises(ValueError, match=message):
+        make_density_interactive(
+            _make_angle_df(), _plane_pair(), tmp_path / "density_plane.html", siblings=siblings
+        )

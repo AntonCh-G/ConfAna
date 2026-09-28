@@ -141,6 +141,37 @@ html, body {
   font-style: italic;
 }
 
+.ca-pair-nav {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ca-pair-nav[hidden] {
+  display: none;
+}
+
+.ca-pair-link {
+  border: 1px solid var(--ca-border);
+  border-radius: 4px;
+  background: var(--ca-bg);
+  color: var(--ca-fg);
+  padding: 2px 8px;
+  text-decoration: none;
+}
+
+.ca-pair-link:hover {
+  border-color: var(--ca-accent);
+}
+
+.ca-pair-link[aria-current="page"] {
+  background: var(--ca-accent);
+  border-color: var(--ca-accent);
+  color: var(--ca-accent-contrast);
+}
+
 .ca-scale-controls {
   display: flex;
   align-items: center;

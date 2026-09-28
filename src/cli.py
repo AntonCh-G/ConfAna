@@ -64,6 +64,23 @@ def _coordinate_pairs(cfg: dict):
     return list_coordinate_pairs(cfg)
 
 
+def _interactive_filename(pair_name: str) -> str:
+    """Return the interactive HTML file name of one coordinate pair."""
+    return f"density_{pair_name}.html"
+
+
+def _pair_siblings(pairs) -> list[dict]:
+    """Sibling page entries for the interactive header navigation.
+
+    Every pair of the run is listed, so each page can link to the others and
+    mark itself as the current one.
+    """
+    return [
+        {"name": name, "title": pair.title or name, "filename": _interactive_filename(name)}
+        for name, pair in pairs
+    ]
+
+
 _OVERLAY_COLORS = ["#e377c2", "#17becf", "#ff7f0e", "#2ca02c"]
 
 
@@ -321,9 +338,11 @@ def build_interactive(config: str) -> None:
 
     click.echo("Building interactive HTML …")
     written: list[str] = []
-    for pair_name, pair in _coordinate_pairs(cfg):
-        filename = f"density_{pair_name}.html"
-        make_density_interactive(df, pair, out / filename, config=cfg)
+    pairs = _coordinate_pairs(cfg)
+    siblings = _pair_siblings(pairs)
+    for pair_name, pair in pairs:
+        filename = _interactive_filename(pair_name)
+        make_density_interactive(df, pair, out / filename, config=cfg, siblings=siblings)
         written.append(filename)
     click.echo(f"  Saved {', '.join(written)} → {out}")
     click.echo("build-interactive done.")
@@ -417,12 +436,14 @@ def run_all(config: str, skip_transitions: bool) -> None:
 
     # Phases 11–12 — interactive HTML
     click.echo("[4/4] Building interactive HTML …")
+    siblings = _pair_siblings(pairs)
     for pair_name, pair in pairs:
         make_density_interactive(
             df,
             pair,
-            out / f"density_{pair_name}.html",
+            out / _interactive_filename(pair_name),
             config=cfg,
+            siblings=siblings,
         )
 
     click.echo(f"\nAll outputs saved to: {out}")

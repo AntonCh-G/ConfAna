@@ -248,6 +248,10 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   whose label contains `(°)`) get ticks on multiples of 1, 2, 5, 10, 15, 30, 45, 60 or 90°,
   whichever gives at most six intervals, e.g. 60° steps across −180…180° and 30° across
   0…180°. Zooming or panning re-picks the step for the visible range.
+- The header links to the pages of the run's other coordinate pairs, so you can jump
+  between e.g. `density_dihedral.html` and `density_plane.html`. The links are plain
+  file names, so the pages must stay in one folder; keep them together when copying or
+  emailing them. With a single coordinate pair no links are shown.
 - The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
   (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or

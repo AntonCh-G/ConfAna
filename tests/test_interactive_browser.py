@@ -130,6 +130,24 @@ def pages(tmp_path_factory) -> dict[str, Path]:
                 "plots": {"interactive": {"embed_xyz_payload": True, "show_states": show}},
             },
         )
+    # Two linked pages of one run, plus a run with a single pair.
+    nav_siblings = [
+        {"name": "dihedral", "title": "Dihedral density", "filename": "nav_a.html"},
+        {"name": "swapped", "title": "Swapped density", "filename": "nav_b.html"},
+    ]
+    swapped = _pair()
+    swapped = CoordinatePair(**{**swapped.__dict__, "name": "swapped", "title": "Swapped density"})
+    no_payload = {"plots": {"interactive": {"embed_xyz_payload": False}}}
+    out["nav_a"] = make_density_interactive(
+        df, _pair(), root / "nav_a.html", config=no_payload, siblings=nav_siblings
+    )
+    out["nav_b"] = make_density_interactive(
+        df, swapped, root / "nav_b.html", config=no_payload, siblings=nav_siblings
+    )
+    out["nav_single"] = make_density_interactive(
+        df, _pair(), root / "nav_single.html", config=no_payload,
+        siblings=[{"name": "dihedral", "title": "Dihedral density", "filename": "nav_single.html"}],
+    )
     out["highlight"] = make_density_interactive(
         _write_trajectory(root / "traj_elements.xyz", elements=_ELEMENTS),
         _pair(x_atoms=_X_ATOMS, y_atoms=_Y_ATOMS, x_dof_type="distance", y_dof_type="distance"),
@@ -851,4 +869,50 @@ def test_degree_ticks_follow_zoom(open_page, pages):
     )
     page.wait_until(f"{dtick}[0] === 60")
     assert page.page.evaluate(dtick) == [60, 60]
+    assert page.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Pair navigation
+# ---------------------------------------------------------------------------
+
+
+def _nav_links(page) -> list[dict]:
+    return page.page.evaluate(
+        """() => [...document.querySelectorAll('#pair-nav a')].map((a) => ({
+             text: a.textContent,
+             href: a.getAttribute('href'),
+             current: a.getAttribute('aria-current'),
+           }))"""
+    )
+
+
+def test_pair_nav_lists_both_pages_and_marks_the_current_one(open_page, pages):
+    page = open_page(pages["nav_a"])
+    assert page.page.evaluate("document.getElementById('pair-nav').hidden") is False
+    assert _nav_links(page) == [
+        {"text": "Dihedral density", "href": "nav_a.html", "current": "page"},
+        {"text": "Swapped density", "href": "nav_b.html", "current": None},
+    ]
+    assert page.errors == []
+
+
+def test_pair_nav_link_opens_the_sibling_page(open_page, pages):
+    page = open_page(pages["nav_a"])
+    page.page.click('#pair-nav a[data-pair="swapped"]')
+    page.page.wait_for_function(
+        "() => document.getElementById('hdr-title').textContent === 'Swapped density'"
+    )
+    assert page.page.url.endswith("nav_b.html")
+    assert _nav_links(page) == [
+        {"text": "Dihedral density", "href": "nav_a.html", "current": None},
+        {"text": "Swapped density", "href": "nav_b.html", "current": "page"},
+    ]
+    assert page.errors == []
+
+
+def test_single_pair_page_hides_the_nav(open_page, pages):
+    page = open_page(pages["nav_single"])
+    assert page.page.evaluate("document.getElementById('pair-nav').hidden") is True
+    assert _nav_links(page) == []
     assert page.errors == []

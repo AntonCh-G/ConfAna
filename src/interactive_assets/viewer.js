@@ -18,6 +18,8 @@
  *  - state overlay: a tint of the majority state per bin (trace 1) with
  *    state-name labels, for one clustering group at a time (page data
  *    states); the side panel names the hovered bin's state
+ *  - pair navigation: header links to the pages of the run's other
+ *    coordinate pairs (page data navigation)
  *
  * Seam left for later slices (inert here): ui_state.pinned_bins.
  */
@@ -842,6 +844,31 @@
     }
     syncStateControls();
   }
+
+  // -------------------------------------------------------------------
+  // Coordinate-pair navigation
+  // -------------------------------------------------------------------
+  // Links to the sibling pages of the same run, which sit in this folder.
+  var navEl = document.getElementById('pair-nav');
+  var navPairs = (pageData.navigation || {}).pairs || [];
+
+  function renderPairNav() {
+    // One pair alone has nowhere to jump to, so the nav stays hidden.
+    if (!navEl || navPairs.length < 2) return;
+    navPairs.forEach(function (entry) {
+      var link = document.createElement('a');
+      link.className = 'ca-pair-link';
+      // Plain file names, so a space or other special character still resolves.
+      link.href = encodeURIComponent(entry.filename);
+      link.textContent = entry.title || entry.name;
+      link.dataset.pair = entry.name;
+      if (entry.current) link.setAttribute('aria-current', 'page');
+      navEl.appendChild(link);
+    });
+    navEl.hidden = false;
+  }
+
+  renderPairNav();
 
   // -------------------------------------------------------------------
   // Degree axis ticks
