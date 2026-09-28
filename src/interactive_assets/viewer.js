@@ -20,6 +20,9 @@
  *    states); the side panel names the hovered bin's state
  *  - pair navigation: header links to the pages of the run's other
  *    coordinate pairs (page data navigation)
+ *  - payload codec: structures and metadata arrive gzipped (page data
+ *    *_encoded); they are unpacked once on load with the browser's own
+ *    DecompressionStream, then read through the payload stores
  *
  * Seam left for later slices (inert here): ui_state.pinned_bins.
  */
@@ -36,11 +39,201 @@
   var binFrameMeta = pageData.bin_frame_metadata || null;
   var binXyz = pageData.bin_xyz_payloads || null;
   var frames = pageData.frame_metadata || null;
+  var encodedBinXyz = pageData.bin_xyz_payloads_encoded || null;
+  var encodedBinMeta = pageData.bin_frame_metadata_encoded || null;
+  var encodedFrames = pageData.frame_metadata_encoded || null;
   var uiState = pageData.ui_state || {};
   var settings = pageData.settings || {};
   var maxPinned = settings.max_pinned || 15;
   var hoverPreview = settings.hover_preview !== false;
   var axisAtoms = pageData.axis_atoms || null;
+
+  // -------------------------------------------------------------------
+  // Payload codec — mirrors src/payload_codec.py
+  // -------------------------------------------------------------------
+  // Everything between the two markers is self-contained (no DOM, no page
+  // data): tests/test_interactive_assets.py cuts it out and runs it in Node
+  // against a fixture encoded by the Python side.
+  // --- payload codec start ---
+  function caBytes(b64) {
+    var binary = atob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  // gzip is unpacked by the browser itself: no library, works offline.
+  function caGunzip(b64) {
+    if (typeof DecompressionStream === 'undefined') {
+      return Promise.reject(new Error('This browser has no DecompressionStream(gzip).'));
+    }
+    var stream = new Blob([caBytes(b64)]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).arrayBuffer();
+  }
+
+  function caGunzipJson(b64) {
+    return caGunzip(b64).then(function (buffer) {
+      return JSON.parse(new TextDecoder().decode(buffer));
+    });
+  }
+
+  // Decimals one coordinate step needs (mirrors coordinate_decimals).
+  function caDecimals(step) {
+    return Math.max(0, Math.min(9, Math.ceil(-Math.log10(step))));
+  }
+
+  function caDecodeStructures(block) {
+    if (!block || block.format !== 'confana-structures-v1') {
+      return Promise.reject(new Error('Not a confana-structures-v1 block.'));
+    }
+    return Promise.all([caGunzipJson(block.index), caGunzip(block.coords)]).then(function (parts) {
+      var index = Object.create(null);
+      parts[0].keys.forEach(function (key, i) { index[key] = i; });
+      return {
+        keys: parts[0].keys,
+        comments: parts[0].comments,
+        index: index,
+        elements: block.elements,
+        atomCount: block.atom_count,
+        step: block.step,
+        coords: new Int16Array(parts[1])
+      };
+    });
+  }
+
+  // One structure rebuilt from the shared arrays, in the same text layout
+  // decode_structures writes.
+  function caStructureText(decoded, key) {
+    var i = decoded.index[key];
+    if (i === undefined) return null;
+    var n = decoded.atomCount;
+    var step = decoded.step;
+    var digits = caDecimals(step);
+    var at = i * n * 3;
+    var lines = [String(n), decoded.comments[i]];
+    for (var a = 0; a < n; a++) {
+      lines.push(
+        decoded.elements[a] + ' ' +
+        (decoded.coords[at + a * 3] * step).toFixed(digits) + ' ' +
+        (decoded.coords[at + a * 3 + 1] * step).toFixed(digits) + ' ' +
+        (decoded.coords[at + a * 3 + 2] * step).toFixed(digits)
+      );
+    }
+    return lines.join('\n') + '\n';
+  }
+
+  function caDecodeColumns(block) {
+    if (!block || block.format !== 'confana-columns-v1') {
+      return Promise.reject(new Error('Not a confana-columns-v1 block.'));
+    }
+    return caGunzipJson(block.data).then(function (payload) {
+      var index = null;
+      if (payload.keys) {
+        index = Object.create(null);
+        payload.keys.forEach(function (key, i) { index[key] = i; });
+      }
+      return {
+        count: block.count,
+        fields: block.fields,
+        columns: payload.columns,
+        keys: payload.keys,
+        index: index
+      };
+    });
+  }
+
+  function caColumnValue(column, i) {
+    if (column.lookup) {
+      var code = column.codes[i];
+      return code === null || code === undefined ? null : column.lookup[code];
+    }
+    return column.values[i];
+  }
+
+  function caColumnsRecord(decoded, i) {
+    if (i === undefined || i === null || i < 0 || i >= decoded.count) return null;
+    var record = {};
+    decoded.fields.forEach(function (field) {
+      record[field] = caColumnValue(decoded.columns[field], i);
+    });
+    return record;
+  }
+  // --- payload codec end ---
+
+  // -------------------------------------------------------------------
+  // Payload stores
+  // -------------------------------------------------------------------
+  // The page reads structures and metadata only through these, so plain
+  // JSON blocks and compressed ones behave the same everywhere else.
+  var structureStore = null;
+  var binMetaStore = null;
+  var frameStore = null;
+  var frameColumnCache = Object.create(null);
+  var payloadsPending = !!(encodedBinXyz || encodedBinMeta || encodedFrames);
+  var payloadError = null;
+
+  function binMetaFor(key) {
+    if (binFrameMeta) return binFrameMeta[key] || null;
+    if (binMetaStore) return caColumnsRecord(binMetaStore, binMetaStore.index[key]);
+    return null;
+  }
+
+  function binXyzFor(key) {
+    if (binXyz) return binXyz[key] || null;
+    if (structureStore) return caStructureText(structureStore, key);
+    return null;
+  }
+
+  function frameCount() {
+    if (frames) return frames.length;
+    return frameStore ? frameStore.count : 0;
+  }
+
+  function frameAt(i) {
+    if (frames) return frames[i] || null;
+    return frameStore ? caColumnsRecord(frameStore, i) : null;
+  }
+
+  // One field of the per-frame table as a plain array, for the click scan.
+  function frameColumn(name) {
+    if (frameColumnCache[name]) return frameColumnCache[name];
+    var values = [];
+    if (frames) {
+      values = frames.map(function (f) { return f[name]; });
+    } else if (frameStore && frameStore.columns[name]) {
+      var column = frameStore.columns[name];
+      values = new Array(frameStore.count);
+      for (var i = 0; i < frameStore.count; i++) values[i] = caColumnValue(column, i);
+    }
+    frameColumnCache[name] = values;
+    return values;
+  }
+
+  // Unpack the compressed blocks once, on load.
+  function loadPayloads() {
+    if (!payloadsPending) return;
+    var jobs = [];
+    if (encodedBinXyz) {
+      jobs.push(caDecodeStructures(encodedBinXyz).then(function (d) { structureStore = d; }));
+    }
+    if (encodedBinMeta) {
+      jobs.push(caDecodeColumns(encodedBinMeta).then(function (d) { binMetaStore = d; }));
+    }
+    if (encodedFrames) {
+      jobs.push(caDecodeColumns(encodedFrames).then(function (d) { frameStore = d; }));
+    }
+    Promise.all(jobs).then(
+      function () {
+        payloadsPending = false;
+        onPayloadsReady();
+      },
+      function (err) {
+        payloadsPending = false;
+        payloadError = err && err.message ? err.message : String(err);
+        onPayloadsFailed();
+      }
+    );
+  }
 
   function axisAtomList(axis) {
     return (axisAtoms && axisAtoms[axis] && axisAtoms[axis].atoms) || [];
@@ -452,7 +645,7 @@
   var previewReadoutEl = document.getElementById('preview-readout');
   var previewMetaEl = document.getElementById('preview-meta');
   // In per-frame mode 3Dmol is never embedded, so there is no 3D preview.
-  var hasStructures = !!(binGeo && binXyz);
+  var hasStructures = !!(binGeo && (binXyz || encodedBinXyz));
   var previewViewer = null;
   var previewFailed = false;
   var lastShownKey = null;
@@ -466,6 +659,27 @@
 
   function showingSuffix() {
     return lastShownKey ? ' — showing bin ' + lastShownKey : '';
+  }
+
+  function loadingMessage() {
+    return hasStructures ? 'Loading structures…' : 'Loading frame data…';
+  }
+
+  function failedMessage() {
+    return 'Could not unpack the embedded data: ' + payloadError;
+  }
+
+  // Both run once, when the compressed blocks are unpacked (or fail to be).
+  function onPayloadsReady() {
+    setStatus(hasStructures ? 'Hover over the map to preview a bin' : 'Hover over the map');
+    // The cursor may already sit on a bin: redo that hover.
+    currentHoverKey = null;
+    if (pendingPoint) processHover();
+  }
+
+  function onPayloadsFailed() {
+    setStatus(failedMessage());
+    showNotice('Rebuild with plots.interactive.compress_payloads: false for plain JSON.');
   }
 
   var lastReadout = null;
@@ -518,20 +732,29 @@
     // Read-out first, so it keeps working even if the 3D viewer fails.
     updateReadout(pt, bin);
 
+    if (payloadsPending) {
+      setStatus(loadingMessage());
+      return;
+    }
+    if (payloadError) {
+      setStatus(failedMessage());
+      return;
+    }
+
     if (!binGeo) {
-      // Per-frame mode: never scan frame_metadata on hover (click only).
+      // Per-frame mode: never scan the frame table on hover (click only).
       setStatus(Number.isFinite(pt.z) ? 'Click to pin the nearest frame' : 'No frames in this bin');
       return;
     }
 
-    var record = bin && binFrameMeta ? binFrameMeta[bin.key] : null;
+    var record = bin ? binMetaFor(bin.key) : null;
     if (!record) {
       setStatus('No frames in this bin' + showingSuffix());
       return;
     }
     if (previewMetaEl) previewMetaEl.innerHTML = buildMetadataHtml(record);
 
-    var xyzText = binXyz ? binXyz[bin.key] : null;
+    var xyzText = binXyzFor(bin.key);
     if (!xyzText) {
       setStatus('No structure available for bin ' + bin.key + showingSuffix());
       return;
@@ -601,6 +824,9 @@
     if (previewMetaBox) previewMetaBox.hidden = false;
     if (previewBox && hasStructures) previewBox.hidden = false;
   }
+
+  if (payloadsPending) setStatus(loadingMessage());
+  loadPayloads();
 
   // -------------------------------------------------------------------
   // Colour scale
@@ -926,22 +1152,30 @@
       var xi = bin ? bin.xi : null;
       var yi = bin ? bin.yi : null;
 
+      if (payloadsPending || payloadError) {
+        showNotice(payloadError ? failedMessage() : loadingMessage());
+        return;
+      }
+
       var best = null;
-      if (binFrameMeta && bin) {
-        best = binFrameMeta[bin.key] || null;
-      } else if (frames) {
+      if (bin) {
+        best = binMetaFor(bin.key);
+      } else if (frameCount()) {
+        var xs = frameColumn(axisSpec.x_col);
+        var ys = frameColumn(axisSpec.y_col);
         var bestDist = Infinity;
-        for (var i = 0; i < frames.length; i++) {
-          var f = frames[i];
-          if (f[axisSpec.x_col] == null || f[axisSpec.y_col] == null) continue;
-          var dx = f[axisSpec.x_col] - cx;
-          var dy = f[axisSpec.y_col] - cy;
+        var bestIndex = -1;
+        for (var i = 0; i < xs.length; i++) {
+          if (xs[i] == null || ys[i] == null) continue;
+          var dx = xs[i] - cx;
+          var dy = ys[i] - cy;
           var d = dx * dx + dy * dy;
           if (d < bestDist) {
             bestDist = d;
-            best = f;
+            bestIndex = i;
           }
         }
+        if (bestIndex >= 0) best = frameAt(bestIndex);
       }
 
       if (!best) return;
@@ -952,7 +1186,7 @@
         return;
       }
 
-      var xyzText = binXyz && bin ? binXyz[bin.key] || null : null;
+      var xyzText = bin ? binXyzFor(bin.key) : null;
 
       createCard(cardKey, getCardTitle(best, xi, yi), buildMetadataHtml(best), xyzText);
     });

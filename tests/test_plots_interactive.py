@@ -6,6 +6,7 @@ import importlib.resources
 import json
 import re
 from html.parser import HTMLParser
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -345,8 +346,10 @@ def test_make_density_interactive_bin_payloads_precede_click_handler(tmp_path):
     page_data_idx = content.find('id="page-data"')
     plotly_click_idx = content.find("plotly_click")
 
-    assert data["bin_frame_metadata"] is not None
-    assert data["bin_xyz_payloads"] is not None
+    # Compressed by default (Slice 7); the plain blocks are the fallback.
+    assert data["bin_frame_metadata_encoded"] is not None
+    assert data["bin_xyz_payloads_encoded"] is not None
+    assert data["bin_frame_metadata"] is None and data["bin_xyz_payloads"] is None
     assert page_data_idx != -1
     assert plotly_click_idx != -1
     assert page_data_idx < plotly_click_idx
@@ -413,7 +416,7 @@ def test_make_density_interactive_metadata_only_remains_valid_with_alignment_con
 
     content = outpath.read_text(encoding="utf-8")
     data = _page_data(content)
-    assert data["frame_metadata"] is not None
+    assert data["frame_metadata_encoded"] is not None
     assert "GLViewer" not in content
 
 
@@ -1217,4 +1220,175 @@ def test_make_density_interactive_invalid_siblings_raise(tmp_path, siblings, mes
     with pytest.raises(ValueError, match=message):
         make_density_interactive(
             _make_angle_df(), _plane_pair(), tmp_path / "density_plane.html", siblings=siblings
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slice 7 — compressed embedded data
+# ---------------------------------------------------------------------------
+
+
+def _bin_df(
+    n: int = 400, seed: int = 5, atoms: int = 3, coord_range: float = 5.0
+) -> tuple[pd.DataFrame, Path]:
+    """Return a coordinate table whose frames point into a real xyz file."""
+    import tempfile
+
+    rng = np.random.default_rng(seed)
+    path = Path(tempfile.mkdtemp()) / "traj.xyz"
+    rows = []
+    with open(path, "wb") as fh:
+        for i in range(n):
+            coords = rng.uniform(-coord_range, coord_range, (atoms, 3))
+            offset = fh.tell()
+            lines = [str(atoms), f"frame {i}"]
+            lines += [f"C {x:.6f} {y:.6f} {z:.6f}" for x, y, z in coords]
+            fh.write(("\n".join(lines) + "\n").encode("utf-8"))
+            rows.append(
+                {
+                    "frame_id": i,
+                    "source_file": str(path),
+                    "trajectory_id": "traj0",
+                    "bead_id": None,
+                    "frame_number": i,
+                    "byte_offset": offset,
+                    "atom_count": atoms,
+                    "comment_line": f"frame {i}",
+                    "local_frame_index": i,
+                    "global_frame_index": i,
+                    "carboxyl_plane": rng.uniform(0, 180),
+                    "ester_plane": rng.uniform(0, 180),
+                }
+            )
+    return pd.DataFrame(rows), path
+
+
+def _bin_cfg(**interactive) -> dict:
+    base = {"embed_xyz_payload": True, "include_plotlyjs": "cdn", "alignment": None}
+    return {"plots": {"density": {"bins": 12}, "interactive": {**base, **interactive}}}
+
+
+def test_compressed_payloads_decode_back_to_the_plain_blocks(tmp_path):
+    from src.payload_codec import decode_columns, decode_structures
+
+    df, _ = _bin_df()
+    plain = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "plain.html", config=_bin_cfg(compress_payloads=False)
+        ).read_text(encoding="utf-8")
+    )
+    packed = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "packed.html", config=_bin_cfg()
+        ).read_text(encoding="utf-8")
+    )
+
+    assert packed["bin_xyz_payloads"] is None and packed["bin_frame_metadata"] is None
+    assert plain["bin_xyz_payloads_encoded"] is None
+    assert plain["bin_frame_metadata_encoded"] is None
+
+    structures = decode_structures(packed["bin_xyz_payloads_encoded"])
+    # The embedded JSON sorts its keys, so compare the sets, not the order.
+    assert sorted(structures) == sorted(plain["bin_xyz_payloads"])
+    for key, text in plain["bin_xyz_payloads"].items():
+        original = np.array([[float(v) for v in ln.split()[1:4]] for ln in text.splitlines()[2:]])
+        rebuilt = np.array(
+            [[float(v) for v in ln.split()[1:4]] for ln in structures[key].splitlines()[2:]]
+        )
+        assert np.abs(rebuilt - original).max() <= 0.0005 + 1e-12
+
+    assert decode_columns(packed["bin_frame_metadata_encoded"]) == plain["bin_frame_metadata"]
+
+
+def test_compressed_payloads_shrink_the_embedded_blocks(tmp_path):
+    df, _ = _bin_df(n=2000, atoms=21)
+    plain = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "plain.html", config=_bin_cfg(compress_payloads=False)
+        ).read_text(encoding="utf-8")
+    )
+    packed = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "packed.html", config=_bin_cfg()
+        ).read_text(encoding="utf-8")
+    )
+
+    def size(data, keys):
+        return sum(len(json.dumps(data[k])) for k in keys)
+
+    assert size(packed, ["bin_xyz_payloads_encoded", "bin_frame_metadata_encoded"]) < size(
+        plain, ["bin_xyz_payloads", "bin_frame_metadata"]
+    ) / 4
+
+
+def test_compressed_per_frame_metadata_round_trips(tmp_path):
+    from src.payload_codec import decode_columns
+
+    df = _make_angle_df()
+    packed = _page_data(
+        make_density_interactive(
+            df,
+            _plane_pair(),
+            tmp_path / "frames.html",
+            config={"plots": {"interactive": {"embed_xyz_payload": False}}},
+        ).read_text(encoding="utf-8")
+    )
+    plain = _page_data(
+        make_density_interactive(
+            df,
+            _plane_pair(),
+            tmp_path / "frames_plain.html",
+            config={"plots": {"interactive": {"embed_xyz_payload": False, "compress_payloads": False}}},
+        ).read_text(encoding="utf-8")
+    )
+    assert packed["frame_metadata"] is None
+    assert decode_columns(packed["frame_metadata_encoded"]) == plain["frame_metadata"]
+
+
+def test_coordinate_step_from_config_is_used(tmp_path):
+    df, _ = _bin_df()
+    data = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "step.html", config=_bin_cfg(coordinate_step=0.01)
+        ).read_text(encoding="utf-8")
+    )
+    assert data["bin_xyz_payloads_encoded"]["step"] == 0.01
+
+
+def test_compressed_blocks_are_identical_across_runs(tmp_path):
+    """gzip carries no timestamp, so repeated builds embed the same bytes."""
+    df, _ = _bin_df()
+    blocks = []
+    for name in ("a.html", "b.html"):
+        data = _page_data(
+            make_density_interactive(
+                df, _plane_pair(), tmp_path / name, config=_bin_cfg()
+            ).read_text(encoding="utf-8")
+        )
+        blocks.append((data["bin_xyz_payloads_encoded"], data["bin_frame_metadata_encoded"]))
+    assert blocks[0] == blocks[1]
+
+
+def test_coordinate_out_of_16_bit_range_fails_the_build(tmp_path):
+    # ±100 Å is past the ±32.767 Å that 16-bit steps of 0.001 Å reach.
+    df, _ = _bin_df(n=20, coord_range=100.0)
+    with pytest.raises(ValueError, match="16-bit"):
+        make_density_interactive(df, _plane_pair(), tmp_path / "far.html", config=_bin_cfg())
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_invalid_compress_payloads_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="compress_payloads"):
+        make_density_interactive(
+            _make_angle_df(), _plane_pair(), tmp_path / "bad.html",
+            config={"plots": {"interactive": {"compress_payloads": value}}},
+        )
+
+
+@pytest.mark.parametrize("value", [0, -0.1, "0.001", True])
+def test_invalid_coordinate_step_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="coordinate_step"):
+        make_density_interactive(
+            _make_angle_df(), _plane_pair(), tmp_path / "bad.html",
+            config={"plots": {"interactive": {"coordinate_step": value}}},
         )

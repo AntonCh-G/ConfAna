@@ -59,6 +59,7 @@ All indices below are 0-based Python indices.
 - `src/plots_static.py`: PNG density and transition plots
 - `src/plots_interactive.py`: standalone interactive HTML outputs
 - `src/viewer.py`: nearest-structure lookup and structure rendering helpers
+- `src/payload_codec.py`: compact encoding of the structures and metadata embedded in the HTML
 - `src/cli.py`: command-line entrypoints
 - `configs/`: local workflow configurations ignored by git
 
@@ -252,6 +253,16 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   between e.g. `density_dihedral.html` and `density_plane.html`. The links are plain
   file names, so the pages must stay in one folder; keep them together when copying or
   emailing them. With a single coordinate pair no links are shown.
+- The embedded structures and metadata are compressed by default
+  (`interactive.compress_payloads: true`), which is most of the file: on a large run the page shrinks to about a third of its size. Element
+  symbols are stored once per page, coordinates as 16-bit integers in steps of
+  `interactive.coordinate_step` (default 0.001 Å, so at most 0.0005 Å of rounding — a
+  display copy; exact coordinates stay in the trajectory files), metadata column by column
+  with repeated strings stored once, and both blocks gzipped. The page unpacks them once
+  on load with the browser's own `DecompressionStream`, needing no library and no internet;
+  a browser without it says so in the side panel. Set `compress_payloads: false` to embed
+  plain JSON for debugging. The build fails loudly if the structures do not share one
+  element sequence, or if a coordinate needs more than 16 bits at the chosen step.
 - The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
   (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or

@@ -118,7 +118,7 @@ The pipeline is layered with a data-model boundary:
 3. **State assignment** — `states.py`
 4. **Transition analysis** — `transitions.py`
 5. **Static plotting** — `plots_static.py`
-6. **Interactive artifact** — `plots_interactive.py`
+6. **Interactive artifact** — `plots_interactive.py` (page assembly), `viewer.py` (per-bin structures and metadata), `payload_codec.py` (compact embedded encoding, decoded in the browser by `interactive_assets/viewer.js`)
 7. **CLI** — `cli.py` wires together all stages via `list_coordinate_pairs(config)`
 
 All downstream stages accept a `CoordinatePair` object, not a definition string. The pair carries all necessary domain, label, and column information.

@@ -107,6 +107,9 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         "frame": {"embed_xyz_payload": False},
         "cdn": {"embed_xyz_payload": True, "include_3dmol": "cdn"},
         "fe": {"embed_xyz_payload": True, "default_scale": "free_energy"},
+        # Slice 7: the same page with the plain-JSON blocks instead.
+        "plain": {"embed_xyz_payload": True, "compress_payloads": False},
+        "plain_frame": {"embed_xyz_payload": False, "compress_payloads": False},
     }
     out = {}
     for name, interactive in variants.items():
@@ -179,8 +182,10 @@ def browser():
 class _Page:
     """One offline page, with helpers to find bins and read the side panel."""
 
-    def __init__(self, browser, path: Path):
+    def __init__(self, browser, path: Path, init_script: str | None = None):
         self.context = browser.new_context(viewport={"width": 1400, "height": 900}, offline=True)
+        if init_script:
+            self.context.add_init_script(init_script)
         self.page = self.context.new_page()
         self.errors: list[str] = []
         self.page.on("pageerror", lambda exc: self.errors.append(str(exc)))
@@ -349,8 +354,8 @@ class _Page:
 def open_page(browser):
     opened: list[_Page] = []
 
-    def _open(path: Path) -> _Page:
-        page = _Page(browser, path)
+    def _open(path: Path, init_script: str | None = None) -> _Page:
+        page = _Page(browser, path, init_script=init_script)
         opened.append(page)
         return page
 
@@ -916,3 +921,81 @@ def test_single_pair_page_hides_the_nav(open_page, pages):
     assert page.page.evaluate("document.getElementById('pair-nav').hidden") is True
     assert _nav_links(page) == []
     assert page.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Compressed embedded data (Slice 7)
+# ---------------------------------------------------------------------------
+
+
+def test_compressed_page_embeds_no_plain_blocks(open_page, pages):
+    page = open_page(pages["bin"])
+    data = page.page_data()
+    assert data["bin_xyz_payloads"] is None and data["bin_frame_metadata"] is None
+    assert data["bin_xyz_payloads_encoded"]["format"] == "confana-structures-v1"
+    assert data["bin_frame_metadata_encoded"]["format"] == "confana-columns-v1"
+
+
+def test_compressed_structures_unpack_and_render(open_page, pages):
+    page = open_page(pages["bin"])
+    target = page.bins()["full"][0]
+    page.hover(target)
+    page.wait_until(
+        f"document.getElementById('preview-status').textContent === 'Bin {target['key']}'"
+    )
+    state = page.state()
+    assert state["status"] == f"Bin {target['key']}"
+    assert state["previewCanvas"]
+    # The rebuilt structure has the same atoms as the source trajectory.
+    assert len(page.atom_styles("#preview-viewer")) == 5
+    assert page.errors == []
+
+
+def test_compressed_metadata_matches_the_plain_page(open_page, pages):
+    """The same bin shows the same metadata whether packed or plain."""
+    meta = {}
+    for variant in ("bin", "plain"):
+        page = open_page(pages[variant])
+        target = page.bins()["full"][0]
+        page.hover(target)
+        page.wait_until(
+            f"document.getElementById('preview-status').textContent === 'Bin {target['key']}'"
+        )
+        meta[variant] = page.page.evaluate(
+            "document.getElementById('preview-meta').textContent"
+        )
+        assert page.errors == []
+    assert meta["bin"] == meta["plain"]
+
+
+def test_plain_per_frame_page_still_pins(open_page, pages):
+    page = open_page(pages["plain_frame"])
+    assert page.page_data()["frame_metadata"] is not None
+    target = page.bins()["full"][0]
+    page.click(target)
+    page.card_count_is(1)
+    assert page.errors == []
+
+
+def test_compressed_per_frame_page_pins_the_nearest_frame(open_page, pages):
+    """The click scan reads the decoded columns, not a list of records."""
+    page = open_page(pages["frame"])
+    assert page.page_data()["frame_metadata_encoded"] is not None
+    target = page.bins()["full"][0]
+    page.click(target)
+    page.card_count_is(1)
+    assert page.state()["cards"][0].startswith("frame:")
+    assert page.errors == []
+
+
+def test_browser_without_decompression_stream_says_so(open_page, pages):
+    page = open_page(pages["bin"], init_script="delete window.DecompressionStream;")
+    page.wait_until(
+        "document.getElementById('preview-status').textContent.indexOf('Could not unpack') === 0"
+    )
+    status = page.state()["status"]
+    assert "DecompressionStream" in status
+    # The map itself still works.
+    assert page.page.evaluate(
+        "document.getElementsByClassName('plotly-graph-div')[0]._fullData.length"
+    ) == 1

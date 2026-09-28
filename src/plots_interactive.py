@@ -41,6 +41,11 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "bin_frame_metadata": {"<xi>_<yi>": {...}} | null,
       "bin_xyz_payloads": {"<xi>_<yi>": "<xyz text>"} | null,
       "frame_metadata": [{...}, ...] | null,
+      # compress_payloads: true (default) embeds these instead of the three
+      # plain blocks above (src.payload_codec; gzip + base64):
+      "bin_frame_metadata_encoded": {...} | null,
+      "bin_xyz_payloads_encoded": {...} | null,
+      "frame_metadata_encoded": {...} | null,
       "states": {                         # null when the state column is absent
         "state_col", "groupby": [str, ...], "labels": [str, ...],
         "colors": [str, ...],             # one per label
@@ -75,6 +80,15 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
 together (``embed_xyz_payload: true``) and mutually exclusive with
 ``frame_metadata`` (``embed_xyz_payload: false``); the client derives which
 mode is active from ``bin_geometry !== null``.
+
+With ``compress_payloads: true`` (the default) those structure and metadata
+blocks are embedded in their ``*_encoded`` form instead, and the plain keys
+are null. The encoders live in :mod:`src.payload_codec`: structures keep one
+element sequence per page and 16-bit coordinates in steps of
+``coordinate_step`` ångström, metadata is stored column by column, and both
+are gzipped and base64-encoded. The page unpacks them once on load with the
+browser's built-in ``DecompressionStream('gzip')``. Set
+``compress_payloads: false`` to embed the plain JSON blocks for debugging.
 
 ``axis_atoms`` lists the atoms that define each axis, taken from the pair's
 DoF definitions (``CoordinatePair.x_atoms`` / ``y_atoms``). Indices are
@@ -512,6 +526,23 @@ def _resolve_interactive_config(cfg: dict) -> dict:
             f"'unit', got {free_energy!r}."
         )
 
+    compress_payloads = interactive_cfg.get("compress_payloads", True)
+    if not isinstance(compress_payloads, bool):
+        raise ValueError(
+            f"plots.interactive.compress_payloads must be true or false, got {compress_payloads!r}."
+        )
+
+    coordinate_step = interactive_cfg.get("coordinate_step", 0.001)
+    if (
+        isinstance(coordinate_step, bool)
+        or not isinstance(coordinate_step, (int, float))
+        or coordinate_step <= 0
+    ):
+        raise ValueError(
+            f"plots.interactive.coordinate_step must be a positive number of ångström, "
+            f"got {coordinate_step!r}."
+        )
+
     theme_colorscales = interactive_cfg.get("theme_colorscales") or {}
     if not isinstance(theme_colorscales, dict) or set(theme_colorscales) - {"light", "dark"}:
         raise ValueError(
@@ -532,6 +563,8 @@ def _resolve_interactive_config(cfg: dict) -> dict:
         "default_scale": default_scale,
         "free_energy": free_energy,
         "theme_colorscales": theme_colorscales,
+        "compress_payloads": compress_payloads,
+        "coordinate_step": float(coordinate_step),
     }
 
 
@@ -834,6 +867,7 @@ def make_density_interactive(
         ``interactive.highlight_dof_atoms``, ``interactive.max_pinned``,
         ``interactive.default_scale``, ``interactive.free_energy``
         (``temperature`` / ``unit``, falling back to ``transitions.*``) and
+        ``interactive.compress_payloads`` / ``interactive.coordinate_step``,
         ``interactive.show_states`` and ``interactive.theme_colorscales``
         (``light`` / ``dark`` Plotly scale names; unset = the density
         colormap trimmed per theme). ``clustering.groupby`` names the groups
@@ -858,7 +892,9 @@ def make_density_interactive(
         invalid, an axis atom index is outside the structures' atom count,
         ``default_scale`` is unknown, the free-energy temperature / unit
         is invalid, ``show_states`` is not a bool, a colour-scale name is
-        unknown, a ``siblings`` entry is malformed or omits ``pair``, or a
+        unknown, a ``siblings`` entry is malformed or omits ``pair``,
+        ``compress_payloads`` is not a bool, ``coordinate_step`` is not
+        positive, a structure does not fit the compressed format, or a
         ``clustering.groupby`` column is missing while the state column is
         present.
     """
@@ -1064,6 +1100,29 @@ def make_density_interactive(
         _build_axis_atoms(pair, _known_atom_counts(df, bin_xyz_payloads)) if highlight else None
     )
 
+    # Compact form of the two big blocks (~98 % of the file as plain JSON).
+    # Encoded and plain blocks are mutually exclusive; the page reads whichever
+    # it finds.
+    encoded: dict[str, dict | None] = {
+        "bin_xyz_payloads_encoded": None,
+        "bin_frame_metadata_encoded": None,
+        "frame_metadata_encoded": None,
+    }
+    if interactive_cfg["compress_payloads"]:
+        from src.payload_codec import encode_columns, encode_structures  # noqa: PLC0415
+
+        if bin_xyz_payloads is not None:
+            encoded["bin_xyz_payloads_encoded"] = encode_structures(
+                bin_xyz_payloads, coordinate_step=interactive_cfg["coordinate_step"]
+            )
+            bin_xyz_payloads = None
+        if bin_frame_metadata is not None:
+            encoded["bin_frame_metadata_encoded"] = encode_columns(bin_frame_metadata)
+            bin_frame_metadata = None
+        if frame_metadata is not None:
+            encoded["frame_metadata_encoded"] = encode_columns(frame_metadata)
+            frame_metadata = None
+
     page_data = {
         "schema_version": 1,
         "pair": {
@@ -1095,6 +1154,7 @@ def make_density_interactive(
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
         "frame_metadata": frame_metadata,
+        **encoded,
         "states": states,
         "axis_ticks": {
             "steps": list(_DEGREE_TICK_STEPS),
