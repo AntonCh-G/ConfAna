@@ -176,7 +176,8 @@ def extract_coordinates(config: str) -> None:
     """Load or build the coordinate table (Phases 0–6).
 
     Reads xyz trajectories (or a cached NPZ), computes DoF angles / distances
-    for every frame, and optionally saves a CSV summary to the output directory.
+    for every frame, and saves the table to the output directory as CSV
+    (``outputs.save_csv``) and/or Parquet (``outputs.save_parquet``).
     """
     from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
 
@@ -187,10 +188,22 @@ def extract_coordinates(config: str) -> None:
     df, cache_hit = load_or_build_coordinate_table_from_config(cfg)
     click.echo(f"  frames={len(df):,}  cache_hit={cache_hit}")
 
-    if cfg.get("outputs", {}).get("save_csv", False):
+    outputs_cfg = cfg.get("outputs", {}) or {}
+    if outputs_cfg.get("save_csv", False):
         csv_path = out / "coordinates_angles.csv"
         df.to_csv(csv_path, index=False)
         click.echo(f"  Saved {csv_path}")
+
+    if outputs_cfg.get("save_parquet", False):
+        from src.io_coordinates import save_coordinate_table  # noqa: PLC0415
+
+        try:
+            parquet_path = save_coordinate_table(df, out / "coordinates_angles.parquet")
+        except ImportError as exc:  # pandas needs a parquet engine
+            raise click.ClickException(
+                "outputs.save_parquet needs a parquet engine: pip install pyarrow"
+            ) from exc
+        click.echo(f"  Saved {parquet_path}")
 
     click.echo("extract-coordinates done.")
 

@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "playwright>=1.63.0",
+    "pyarrow>=14.0",  # parquet branch of load_coordinate_table / save_coordinate_table
     "pytest>=7.0",
     "pytest-cov",
 ]

@@ -225,6 +225,23 @@ def test_extract_coordinates_creates_csv(tmp_path):
     assert csv_path.exists(), f"CSV not found; CLI output:\n{result.output}"
 
 
+def test_extract_coordinates_saves_parquet_when_configured(tmp_path):
+    pytest.importorskip("pyarrow", reason="pyarrow not installed; skipping parquet test")
+    _write_minimal_xyz(tmp_path / "traj.xyz", n_frames=5, n_atoms=9)
+    config_path = _write_minimal_config(tmp_path)
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg.setdefault("outputs", {})["save_parquet"] = True
+    config_path.write_text(yaml.safe_dump(cfg))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract-coordinates", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    parquet_path = tmp_path / "outputs" / "plots" / "coordinates_angles.parquet"
+    assert parquet_path.exists(), f"parquet not found; CLI output:\n{result.output}"
+    assert len(pd.read_parquet(parquet_path)) == 5
+
+
 def test_extract_coordinates_missing_config():
     """Nonexistent config file causes a non-zero exit."""
     runner = CliRunner()
