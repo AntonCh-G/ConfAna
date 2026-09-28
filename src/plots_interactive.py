@@ -25,6 +25,15 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "schema_version": 1,
       "pair": {"name", "x_col", "y_col", "x_label", "y_label", "title"},
       "header": {"frame_count", "bin_count_x", "bin_count_y", "scale_mode_label"},
+      "scale": {                          # colour-scale modes (Slice 4)
+        "grids": {                        # rows = y bins, columns = x bins;
+          "counts": [[int | null]],       # null = unsampled bin (blank)
+          "log_counts": [[float | null]], # log10(count + 1)
+          "free_energy": [[float | null]] # dimensionless -ln(P / P_max)
+        },
+        "modes": {"<mode>": {"label", "value_label", "z_format", "subtitle"}},
+        "energy_units": [{"key", "label", "k_B"}, ...]   # from src.units
+      } | null,
       "axis_spec": {"x_col", "y_col"},
       "bin_geometry": {"x_min", "y_min", "bin_w", "bin_h",
                         "n_bins_x", "n_bins_y"} | null,
@@ -41,10 +50,10 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       },
       "ui_state": {
         "theme": "auto" | "light" | "dark",
-        "scale_mode": null,               # seam for Slice 4
+        "scale_mode": "log_counts" | "counts" | "free_energy",
         "state_overlay_visible": false,   # seam for Slice 5
-        "temperature": null,              # seam for Slice 4
-        "unit": null,                     # seam for Slice 4
+        "temperature": float | null,      # K; null = none known yet
+        "unit": "kT" | "kJ/mol" | ...,    # key of scale.energy_units
         "pinned_bins": []                 # seam for later slices
       }
     }
@@ -59,6 +68,12 @@ DoF definitions (``CoordinatePair.x_atoms`` / ``y_atoms``). Indices are
 0-based file indices, as in config; ``name`` is the DoF column and ``type``
 the DoF type. ``atoms`` is null for DoF types without atoms (collective,
 external). The 3D views colour these atoms and the axis titles to match.
+
+``scale`` holds every colour-scale mode, so the page switches modes, the
+temperature and the energy unit without re-running the pipeline. In
+free-energy mode the map shows ``F = k_B T · free_energy`` in
+``ui_state.unit`` (``kT`` = dimensionless, ignores the temperature).
+``modes.free_energy.value_label`` is null: the page builds it from the unit.
 
 Public API
 ----------
@@ -79,8 +94,15 @@ import pandas as pd
 
 from collections.abc import Iterable
 
-from src.density import compute_2d_histogram
+from src.density import compute_2d_histogram, population_free_energy
 from src.models import CoordinatePair
+from src.units import (
+    energy_unit_table,
+    thermal_energy,
+    unit_label,
+    validate_energy_unit,
+    validate_temperature,
+)
 
 # ---------------------------------------------------------------------------
 # Metadata columns included in the embedded JSON
@@ -99,6 +121,79 @@ _BASE_META_COLUMNS = [
     "global_frame_index",
     "energy",
 ]
+
+# ---------------------------------------------------------------------------
+# Colour-scale modes
+# ---------------------------------------------------------------------------
+
+_DENSITY_SUBTITLE = "Coordinate-density landscape — not a potential energy surface"
+
+# Embedded as page data "scale.modes", so the page's labels come from here.
+# The free-energy value label depends on the unit and is built by
+# _scale_value_label (and the same way in viewer.js).
+_SCALE_MODES: dict[str, dict] = {
+    "log_counts": {
+        "label": "log counts",
+        "value_label": "log₁₀(count+1)",
+        "z_format": ".3f",
+        "subtitle": _DENSITY_SUBTITLE,
+    },
+    "counts": {
+        "label": "counts",
+        "value_label": "count",
+        "z_format": ".0f",
+        "subtitle": _DENSITY_SUBTITLE,
+    },
+    "free_energy": {
+        "label": "free-energy-like",
+        "value_label": None,
+        "z_format": ".3f",
+        "subtitle": "Population-derived free-energy-like surface, not a potential energy surface",
+    },
+}
+
+# Decimals kept in the embedded grids (counts are exact integers).
+_GRID_DECIMALS = 4
+
+
+def _scale_value_label(mode: str, unit: str) -> str:
+    """Colourbar / read-out label for *mode* (mirrors valueLabel in viewer.js)."""
+    if mode == "free_energy":
+        return f"F ({unit_label(unit)})"
+    return _SCALE_MODES[mode]["value_label"]
+
+
+def _hovertemplate(x_label: str, y_label: str, value_label: str, z_format: str) -> str:
+    """Heatmap hover template (mirrors hoverTemplate in viewer.js)."""
+    return (
+        f"{x_label}: %{{x:.1f}}<br>"
+        f"{y_label}: %{{y:.1f}}<br>"
+        f"{value_label}: %{{z:{z_format}}}<extra></extra>"
+    )
+
+
+def _scale_grids(counts: np.ndarray) -> dict[str, np.ndarray]:
+    """Return the display grids for every scale mode; unsampled bins are NaN.
+
+    *counts* is oriented like the heatmap's z (rows = y bins). Values are
+    rounded as embedded, so the initial figure and the page use equal numbers.
+    """
+    counts = np.asarray(counts, dtype=float)
+    sampled = counts > 0
+    log_counts = np.full(counts.shape, np.nan)
+    log_counts[sampled] = np.log10(counts[sampled] + 1.0)
+    return {
+        "counts": np.where(sampled, counts, np.nan),
+        "log_counts": np.round(log_counts, _GRID_DECIMALS),
+        "free_energy": np.round(population_free_energy(counts), _GRID_DECIMALS),
+    }
+
+
+def _grid_to_json(grid: np.ndarray, integer: bool = False) -> list[list]:
+    """Nested lists for JSON: NaN → None (JSON null), optionally as ints."""
+    cast = int if integer else float
+    return [[None if np.isnan(v) else cast(v) for v in row] for row in grid.tolist()]
+
 
 # ---------------------------------------------------------------------------
 # Bundled page assets (template, CSS, JS, vendored 3Dmol.js)
@@ -173,8 +268,9 @@ def _resolve_interactive_config(cfg: dict) -> dict:
     Raises
     ------
     ValueError
-        If ``hover_preview`` or ``highlight_dof_atoms`` is not a bool, or
-        ``max_pinned`` is not an integer >= 1.
+        If ``hover_preview`` or ``highlight_dof_atoms`` is not a bool,
+        ``max_pinned`` is not an integer >= 1, ``default_scale`` is not
+        a known scale mode, or ``free_energy`` is not a mapping.
     """
     interactive_cfg = (cfg.get("plots", {}) or {}).get("interactive", {}) or {}
 
@@ -192,6 +288,21 @@ def _resolve_interactive_config(cfg: dict) -> dict:
             f"plots.interactive.max_pinned must be an integer >= 1, got {max_pinned!r}."
         )
 
+    # None = follow the density log_scale setting (log_counts or counts).
+    default_scale = interactive_cfg.get("default_scale")
+    if default_scale is not None and default_scale not in _SCALE_MODES:
+        raise ValueError(
+            f"plots.interactive.default_scale must be one of {list(_SCALE_MODES)}, "
+            f"got {default_scale!r}."
+        )
+
+    free_energy = interactive_cfg.get("free_energy") or {}
+    if not isinstance(free_energy, dict):
+        raise ValueError(
+            "plots.interactive.free_energy must be a mapping with 'temperature' and/or "
+            f"'unit', got {free_energy!r}."
+        )
+
     return {
         "include_plotlyjs": interactive_cfg.get("include_plotlyjs", True),
         "include_3dmol": interactive_cfg.get("include_3dmol", "inline"),
@@ -201,7 +312,44 @@ def _resolve_interactive_config(cfg: dict) -> dict:
         "hover_preview": flags["hover_preview"],
         "highlight_dof_atoms": flags["highlight_dof_atoms"],
         "max_pinned": max_pinned,
+        "default_scale": default_scale,
+        "free_energy": free_energy,
     }
+
+
+def _resolve_free_energy_defaults(cfg: dict, free_energy_cfg: dict) -> tuple[float | None, str]:
+    """Return the page's initial ``(temperature, unit)`` for free-energy mode.
+
+    Each falls back from ``plots.interactive.free_energy.*`` to
+    ``transitions.temperature`` / ``transitions.energy_unit``. With no
+    temperature from either, the page opens in ``kT`` (dimensionless) with an
+    empty temperature field; a configured unit is still validated.
+
+    Raises
+    ------
+    ValueError
+        If the chosen temperature is not a positive number of kelvin, or the
+        chosen unit is not one of :data:`src.units.ENERGY_UNITS`.
+    """
+    transitions_cfg = cfg.get("transitions", {}) or {}
+
+    temperature = free_energy_cfg.get("temperature")
+    t_source = "plots.interactive.free_energy.temperature"
+    if temperature is None:
+        temperature = transitions_cfg.get("temperature")
+        t_source = "transitions.temperature"
+    if temperature is not None:
+        temperature = validate_temperature(temperature, source=t_source)
+
+    unit = free_energy_cfg.get("unit")
+    u_source = "plots.interactive.free_energy.unit"
+    if unit is None:
+        unit = transitions_cfg.get("energy_unit")
+        u_source = "transitions.energy_unit"
+    if unit is None:
+        return temperature, "kT"
+    unit = validate_energy_unit(unit, source=u_source)
+    return temperature, unit if temperature is not None else "kT"
 
 
 def _build_frame_metadata_records(
@@ -336,9 +484,13 @@ def render_density_page(page_data: dict) -> str:
             )
 
     pair_info = state.get("pair") or {}
+    scale_modes = (state.get("scale") or {}).get("modes") or {}
+    scale_mode = (state.get("ui_state") or {}).get("scale_mode")
+    subtitle = (scale_modes.get(scale_mode) or {}).get("subtitle", _DENSITY_SUBTITLE)
     template = string.Template(_load_asset("page.html"))
     return template.substitute(
         html_title=html.escape(str(pair_info.get("title", "ConfAna"))),
+        subtitle=html.escape(subtitle),
         page_data_json=page_data_json,
         plot_fragment=page_data.get("plot_html", ""),
         threedmol_tag=threedmol_tag,
@@ -388,7 +540,9 @@ def make_density_interactive(
         ``interactive.include_plotlyjs``, ``interactive.include_3dmol``,
         ``interactive.embed_xyz_payload``, ``interactive.theme``,
         ``interactive.alignment``, ``interactive.hover_preview``,
-        ``interactive.highlight_dof_atoms`` and ``interactive.max_pinned``.
+        ``interactive.highlight_dof_atoms``, ``interactive.max_pinned``,
+        ``interactive.default_scale`` and ``interactive.free_energy``
+        (``temperature`` / ``unit``, falling back to ``transitions.*``).
 
     Returns
     -------
@@ -400,12 +554,15 @@ def make_density_interactive(
     ValueError
         If the feature columns are not found in ``df``,
         ``hover_preview`` / ``highlight_dof_atoms`` / ``max_pinned`` are
-        invalid, or an axis atom index is outside the structures' atom count.
+        invalid, an axis atom index is outside the structures' atom count,
+        ``default_scale`` is unknown, or the free-energy temperature / unit
+        is invalid.
     """
     import plotly.graph_objects as go  # noqa: PLC0415
 
     cfg = config or {}
     interactive_cfg = _resolve_interactive_config(cfg)
+    temperature, unit = _resolve_free_energy_defaults(cfg, interactive_cfg["free_energy"])
     plots_cfg = cfg.get("plots", {}) or {}
     _, density_cfg = (
         (cfg, plots_cfg.get("density", {}) or {}) if "density" in plots_cfg else ({}, cfg)
@@ -449,12 +606,13 @@ def make_density_interactive(
         y_range=y_range,
     )
 
-    # Convert counts to display values (log or raw); mask zeros as NaN
-    Z = H.T.astype(float)
-    Z[Z == 0.0] = np.nan
-    if log_scale:
-        Z = np.log10(Z + 1.0)
-    colorbar_title = "log₁₀(count+1)" if log_scale else "count"
+    # Every scale mode's grid is embedded; the figure starts in scale_mode.
+    scale_mode = interactive_cfg["default_scale"] or ("log_counts" if log_scale else "counts")
+    grids = _scale_grids(H.T)
+    Z = grids[scale_mode]
+    if scale_mode == "free_energy":
+        Z = Z * thermal_energy(unit, temperature)
+    colorbar_title = _scale_value_label(scale_mode, unit)
 
     # Bin centres for hover / click coordinates
     x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
@@ -470,10 +628,8 @@ def make_density_interactive(
         colorbar={"title": colorbar_title},
         # Hover must fire over empty bins so the preview can say "no frames".
         hoverongaps=True,
-        hovertemplate=(
-            f"{pair.x_label}: %{{x:.1f}}<br>"
-            f"{pair.y_label}: %{{y:.1f}}<br>"
-            f"{colorbar_title}: %{{z:.3f}}<extra></extra>"
+        hovertemplate=_hovertemplate(
+            pair.x_label, pair.y_label, colorbar_title, _SCALE_MODES[scale_mode]["z_format"]
         ),
     )
 
@@ -567,6 +723,15 @@ def make_density_interactive(
             "bin_count_y": n_bins_y,
             "scale_mode_label": colorbar_title,
         },
+        "scale": {
+            "grids": {
+                "counts": _grid_to_json(grids["counts"], integer=True),
+                "log_counts": _grid_to_json(grids["log_counts"]),
+                "free_energy": _grid_to_json(grids["free_energy"]),
+            },
+            "modes": _SCALE_MODES,
+            "energy_units": energy_unit_table(),
+        },
         "axis_spec": {"x_col": x_col, "y_col": y_col},
         "bin_geometry": bin_geometry,
         "bin_frame_metadata": bin_frame_metadata,
@@ -579,10 +744,10 @@ def make_density_interactive(
         },
         "ui_state": {
             "theme": theme,
-            "scale_mode": None,
+            "scale_mode": scale_mode,
             "state_overlay_visible": False,
-            "temperature": None,
-            "unit": None,
+            "temperature": temperature,
+            "unit": unit,
             "pinned_bins": [],
         },
         "plot_html": plot_html,

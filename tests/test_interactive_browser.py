@@ -106,12 +106,14 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         "bin": {"embed_xyz_payload": True, "max_pinned": _MAX_PINNED},
         "frame": {"embed_xyz_payload": False},
         "cdn": {"embed_xyz_payload": True, "include_3dmol": "cdn"},
+        "fe": {"embed_xyz_payload": True, "default_scale": "free_energy"},
     }
     out = {}
     for name, interactive in variants.items():
-        out[name] = make_density_interactive(
-            df, _pair(), root / f"{name}.html", config={"plots": {"interactive": interactive}}
-        )
+        config = {"plots": {"interactive": interactive}}
+        if name == "fe":
+            config["transitions"] = {"temperature": 300.0, "energy_unit": "kJ/mol"}
+        out[name] = make_density_interactive(df, _pair(), root / f"{name}.html", config=config)
     out["highlight"] = make_density_interactive(
         _write_trajectory(root / "traj_elements.xyz", elements=_ELEMENTS),
         _pair(x_atoms=_X_ATOMS, y_atoms=_Y_ATOMS, x_dof_type="distance", y_dof_type="distance"),
@@ -249,6 +251,36 @@ class _Page:
             selector,
         )
 
+    def scale_state(self) -> dict:
+        """Heatmap z/labels and the scale controls, as the page shows them."""
+        return self.page.evaluate(
+            """() => {
+              const gd = document.getElementsByClassName('plotly-graph-div')[0];
+              const tr = gd._fullData[0];
+              const z = Array.from(tr.z, (row) => Array.from(row,
+                (v) => (v === null || Number.isNaN(v) ? null : v)));
+              const pressed = [...document.querySelectorAll('.ca-segment')]
+                .filter((b) => b.getAttribute('aria-pressed') === 'true')
+                .map((b) => b.dataset.scale);
+              const hint = document.getElementById('fe-hint');
+              return {
+                z,
+                colorbar: tr.colorbar.title.text,
+                hovertemplate: tr.hovertemplate,
+                header: document.getElementById('hdr-scale-mode').textContent,
+                subtitle: document.getElementById('hdr-subtitle').textContent,
+                pressed,
+                feHidden: document.getElementById('fe-controls').hidden,
+                hint: hint.hidden ? null : hint.textContent,
+                temperature: document.getElementById('fe-temperature').value,
+                unit: document.getElementById('fe-unit').value,
+              };
+            }"""
+        )
+
+    def page_data(self) -> dict:
+        return self.page.evaluate("JSON.parse(document.getElementById('page-data').textContent)")
+
     def axis_title_colors(self) -> dict:
         return self.page.evaluate(
             """() => {
@@ -370,7 +402,7 @@ def test_theme_toggle_recolours_plot(open_page, pages):
     assert state["paper"] == "#1c2024"
 
 
-@pytest.mark.parametrize("variant", ["bin", "highlight"])
+@pytest.mark.parametrize("variant", ["bin", "highlight", "fe"])
 def test_idle_page_does_not_redraw(open_page, pages, variant):
     page = open_page(pages[variant])
     redraws = page.page.evaluate(
@@ -504,3 +536,131 @@ def test_page_without_axis_atoms_keeps_element_colours(open_page, pages):
     assert all(a["sphere"] is None and a["stick"] in ("None", "undefined") for a in styles)
     assert page.axis_title_colors() == {"x": None, "y": None}
     assert page.page.evaluate("document.getElementById('axis-legend').hidden") is True
+
+
+# ---------------------------------------------------------------------------
+# Colour scale, temperature and unit
+# ---------------------------------------------------------------------------
+
+_DENSITY_SUBTITLE = "Coordinate-density landscape — not a potential energy surface"
+_FE_SUBTITLE = "Population-derived free-energy-like surface, not a potential energy surface"
+
+
+def _scaled(grid: list[list], factor: float) -> list[list]:
+    return [[None if v is None else v * factor for v in row] for row in grid]
+
+
+def _k_b(data: dict, unit: str) -> float:
+    return next(u["k_B"] for u in data["scale"]["energy_units"] if u["key"] == unit)
+
+
+def test_scale_toggle_swaps_grids_and_labels(open_page, pages):
+    page = open_page(pages["bin"])
+    grids = page.page_data()["scale"]["grids"]
+    initial = page.scale_state()
+    assert initial["pressed"] == ["log_counts"]
+    assert initial["z"] == grids["log_counts"]
+    assert initial["feHidden"] is True
+
+    page.page.click('[data-scale="counts"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'count'")
+    state = page.scale_state()
+    assert state["z"] == grids["counts"]
+    assert (state["colorbar"], state["header"], state["pressed"]) == ("count", "count", ["counts"])
+    assert "count: %{z:.0f}" in state["hovertemplate"]
+    assert state["subtitle"] == _DENSITY_SUBTITLE
+
+    # No temperature configured: free-energy mode opens in kT.
+    page.page.click('[data-scale="free_energy"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kT)'")
+    state = page.scale_state()
+    assert state["z"] == grids["free_energy"]
+    assert state["colorbar"] == "F (kT)"
+    assert state["feHidden"] is False
+    assert state["subtitle"] == _FE_SUBTITLE
+
+    # Back to the start: the page rebuilds exactly what Python built.
+    page.page.click('[data-scale="log_counts"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent.startsWith('log')")
+    state = page.scale_state()
+    for key in ("z", "colorbar", "hovertemplate", "header", "subtitle"):
+        assert state[key] == initial[key], key
+    assert page.errors == []
+
+
+def test_temperature_and_unit_rescale_free_energy(open_page, pages):
+    page = open_page(pages["bin"])
+    data = page.page_data()
+    fe = data["scale"]["grids"]["free_energy"]
+    page.page.click('[data-scale="free_energy"]')
+
+    page.page.select_option("#fe-unit", "kJ/mol")
+    page.wait_until("!document.getElementById('fe-hint').hidden")
+    state = page.scale_state()
+    assert state["hint"] == "Enter a temperature to show kJ/mol; showing kT"
+    assert state["z"] == fe and state["colorbar"] == "F (kT)"
+
+    page.page.fill("#fe-temperature", "300")
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kJ/mol)'")
+    state = page.scale_state()
+    assert state["hint"] is None
+    assert state["colorbar"] == "F (kJ/mol)"
+    assert state["z"] == _scaled(fe, _k_b(data, "kJ/mol") * 300.0)
+
+    page.page.fill("#fe-temperature", "600")
+    page.wait_until(
+        "document.getElementsByClassName('plotly-graph-div')[0]._fullData[0].z"
+        f".flat().some((v) => Math.abs(v - {max(v for r in fe for v in r if v) * _k_b(data, 'kJ/mol') * 600.0}) < 1e-9)"
+    )
+    assert page.scale_state()["z"] == _scaled(fe, _k_b(data, "kJ/mol") * 600.0)
+
+    page.page.select_option("#fe-unit", "cm^-1")
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (cm⁻¹)'")
+    assert page.scale_state()["z"] == _scaled(fe, _k_b(data, "cm^-1") * 600.0)
+
+    # kT ignores the temperature.
+    page.page.select_option("#fe-unit", "kT")
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kT)'")
+    assert page.scale_state()["z"] == fe
+    assert page.errors == []
+
+
+def test_free_energy_default_page_opens_as_configured(open_page, pages):
+    page = open_page(pages["fe"])
+    data = page.page_data()
+    state = page.scale_state()
+    assert state["pressed"] == ["free_energy"]
+    assert (state["temperature"], state["unit"]) == ("300", "kJ/mol")
+    assert state["colorbar"] == state["header"] == "F (kJ/mol)"
+    assert state["subtitle"] == _FE_SUBTITLE
+    assert state["z"] == _scaled(data["scale"]["grids"]["free_energy"], _k_b(data, "kJ/mol") * 300.0)
+
+    # Switch away and back: the page's own formula must give exactly the
+    # numbers Python baked into the figure.
+    page.page.click('[data-scale="counts"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'count'")
+    page.page.click('[data-scale="free_energy"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kJ/mol)'")
+    rebuilt = page.scale_state()
+    for key in ("z", "colorbar", "hovertemplate"):
+        assert rebuilt[key] == state[key], key
+
+
+def test_readout_shows_scaled_value_and_raw_count(open_page, pages):
+    page = open_page(pages["fe"])
+    data = page.page_data()
+    first = page.bins()["full"][0]
+    xi, yi = (int(v) for v in first["key"].split("_"))
+    page.hover(first)
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
+    text = page.page.evaluate("document.getElementById('preview-readout').innerText")
+    count = data["scale"]["grids"]["counts"][yi][xi]
+    value = data["scale"]["grids"]["free_energy"][yi][xi] * _k_b(data, "kJ/mol") * 300.0
+    lines = dict(line.split(": ", 1) for line in text.splitlines() if ": " in line)
+    assert float(lines["F (kJ/mol)"]) == pytest.approx(value, rel=1e-5)
+    assert lines["count"] == str(count)
+
+    # Changing the scale refreshes the read-out for the bin under the cursor.
+    page.page.select_option("#fe-unit", "kT")
+    page.wait_until("document.getElementById('preview-readout').innerText.includes('F (kT)')")
+    assert f"count: {count}" in page.page.evaluate("document.getElementById('preview-readout').innerText")

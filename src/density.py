@@ -7,6 +7,7 @@ Public API
 ----------
 - ``compute_2d_histogram``
 - ``compute_2d_histogram_arrays``
+- ``population_free_energy``
 """
 
 from __future__ import annotations
@@ -125,3 +126,38 @@ def compute_2d_histogram_arrays(
     )
 
     return H.astype(np.int64), x_edges, y_edges
+
+
+def population_free_energy(counts: np.ndarray) -> np.ndarray:
+    """Return the dimensionless free-energy-like surface ``−ln(P / P_max)``.
+
+    ``P`` is the population of each bin, so ``P / P_max = counts / counts.max()``.
+    The most-populated bin is 0, every other sampled bin is positive, and
+    unsampled bins (count 0) are NaN. Multiply by ``k_B · T`` in some unit
+    (see :mod:`src.units`) to get an energy. This is derived from frame
+    counts, not from energies: it is not a potential energy surface.
+
+    Parameters
+    ----------
+    counts:
+        Histogram counts of any shape (non-negative).
+
+    Returns
+    -------
+    np.ndarray
+        Float array of the same shape; all NaN when no bin is sampled.
+
+    Raises
+    ------
+    ValueError
+        If any count is negative or not finite.
+    """
+    c = np.asarray(counts, dtype=float)
+    if not np.all(np.isfinite(c)) or np.any(c < 0):
+        raise ValueError("population_free_energy: counts must be finite and non-negative.")
+    out = np.full(c.shape, np.nan)
+    sampled = c > 0
+    if np.any(sampled):
+        # log(max / c) rather than -log(c / max): the top bin is +0.0, not -0.0.
+        out[sampled] = np.log(c.max() / c[sampled])
+    return out

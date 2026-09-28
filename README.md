@@ -249,4 +249,19 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   (0-based file indices, from the pair's `dof` entries). The build fails if an index is
   not below the structures' atom count. Turn it off with
   `interactive.highlight_dof_atoms: false`.
+- The header switches the map's colour scale between `log counts`, `counts` and
+  `free-energy-like` without re-running the pipeline. Free-energy-like values are
+  `F = k_B·T·(−ln(P / P_max))`, where `P` is the bin population: the most-populated bin is
+  0 and unsampled bins stay blank. This is derived from frame counts, not energies, so it
+  is a population-derived free-energy-like surface, not a potential energy surface. The
+  temperature (K) and the unit (`kT`, `kJ/mol`, `kcal/mol`, `eV`, `meV`, `cm⁻¹`) can be
+  changed in the page; `kT` is dimensionless and ignores the temperature. The side panel
+  shows the hovered bin's value in the current unit and its raw count.
+  - `interactive.default_scale` sets the opening mode (`log_counts` | `counts` |
+    `free_energy`); unset, it follows `density.log_scale`.
+  - `interactive.free_energy.temperature` / `.unit` set the opening temperature and unit,
+    falling back to `transitions.temperature` / `transitions.energy_unit`. With no
+    temperature from either, the page opens in `kT` with an empty temperature field.
+    An unknown unit or a temperature ≤ 0 stops the build with an error.
+  - The `k_B` values per unit live in one table in `src/units.py`, which the page embeds.
 - XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.

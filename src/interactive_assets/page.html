@@ -21,7 +21,21 @@ $inline_css
       </span>
     </div>
     <div class="ca-header-sub">
-      <span class="ca-subtitle">Coordinate-density landscape &mdash; not a potential energy surface</span>
+      <span id="hdr-subtitle" class="ca-subtitle">$subtitle</span>
+      <div id="scale-controls" class="ca-scale-controls" hidden>
+        <div class="ca-segmented" role="group" aria-label="Colour scale">
+          <button type="button" class="ca-segment" data-scale="log_counts">log counts</button>
+          <button type="button" class="ca-segment" data-scale="counts">counts</button>
+          <button type="button" class="ca-segment" data-scale="free_energy">free-energy-like</button>
+        </div>
+        <span id="fe-controls" class="ca-fe-controls" hidden>
+          <label class="ca-fe-field">T
+            <input id="fe-temperature" type="number" min="0" step="any" inputmode="decimal" aria-label="Temperature in kelvin"> K
+          </label>
+          <select id="fe-unit" aria-label="Energy unit"></select>
+          <span id="fe-hint" class="ca-fe-hint" hidden></span>
+        </span>
+      </div>
       <button id="theme-toggle" type="button" class="ca-btn">Theme</button>
     </div>
   </header>

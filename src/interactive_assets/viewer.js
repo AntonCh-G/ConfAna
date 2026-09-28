@@ -12,9 +12,12 @@
  *  - axis-atom highlighting: the atoms defining the x and y coordinates
  *    (page data axis_atoms) are coloured in every 3D view, matching the
  *    axis titles, with a legend in the side panel
+ *  - colour scale: log counts | counts | free-energy-like, with an editable
+ *    temperature and energy unit; grids and the unit table come from Python
+ *    (page data scale), and ui_state is kept in step with the controls
  *
- * Seams left for later slices (inert here): ui_state.scale_mode,
- * state_overlay_visible, temperature, unit, pinned_bins.
+ * Seams left for later slices (inert here): ui_state.state_overlay_visible,
+ * pinned_bins.
  */
 (function () {
   'use strict';
@@ -249,6 +252,7 @@
   }
 
   function formatValue(value) {
+    if (Number.isInteger(value)) return String(value);
     if (typeof value === 'number') {
       return value.toPrecision ? value.toPrecision(6) : value;
     }
@@ -441,14 +445,20 @@
     return lastShownKey ? ' — showing bin ' + lastShownKey : '';
   }
 
-  function updateReadout(pt) {
+  var lastReadout = null;
+
+  // Value and count come from the grids, so a scale change can refresh them.
+  function updateReadout(pt, bin) {
+    lastReadout = {pt: pt, bin: bin};
     if (!previewReadoutEl) return;
     previewReadoutEl.innerHTML = '';
+    var value = bin && currentGrid ? currentGrid[bin.yi][bin.xi] : pt.z;
     var rows = [
       [pairInfo.x_label || axisSpec.x_col, pt.x],
       [pairInfo.y_label || axisSpec.y_col, pt.y],
-      [headerInfo.scale_mode_label || 'value', pt.z]
+      [scale ? valueLabel(scaleMode()) : headerInfo.scale_mode_label || 'value', value]
     ];
+    if (bin && scale) rows.push(['count', scale.grids.counts[bin.yi][bin.xi] || 0]);
     rows.forEach(function (row) {
       var line = document.createElement('div');
       var label = document.createElement('b');
@@ -483,7 +493,7 @@
     currentHoverKey = key;
 
     // Read-out first, so it keeps working even if the 3D viewer fails.
-    updateReadout(pt);
+    updateReadout(pt, bin);
 
     if (!binGeo) {
       // Per-frame mode: never scan frame_metadata on hover (click only).
@@ -567,6 +577,151 @@
   if (hoverPreview) {
     if (previewMetaBox) previewMetaBox.hidden = false;
     if (previewBox && hasStructures) previewBox.hidden = false;
+  }
+
+  // -------------------------------------------------------------------
+  // Colour scale
+  // -------------------------------------------------------------------
+  var scale = pageData.scale || null;
+  var scaleModes = (scale && scale.modes) || {};
+  var energyUnits = Object.create(null);
+  ((scale && scale.energy_units) || []).forEach(function (u) {
+    energyUnits[u.key] = u;
+  });
+  var scaleControlsEl = document.getElementById('scale-controls');
+  var segmentEls = document.querySelectorAll('.ca-segment');
+  var feControlsEl = document.getElementById('fe-controls');
+  var tempInput = document.getElementById('fe-temperature');
+  var unitSelect = document.getElementById('fe-unit');
+  var feHintEl = document.getElementById('fe-hint');
+  var subtitleEl = document.getElementById('hdr-subtitle');
+  var currentGrid = null;
+  var shownScaleKey = null;
+  var scaleFrameRequested = false;
+
+  function validTemperature(t) {
+    return typeof t === 'number' && Number.isFinite(t) && t > 0;
+  }
+
+  function scaleMode() {
+    return scaleModes[uiState.scale_mode] ? uiState.scale_mode : 'log_counts';
+  }
+
+  // A unit other than kT needs a temperature; without one the map shows kT.
+  function shownUnit() {
+    var unit = energyUnits[uiState.unit] ? uiState.unit : 'kT';
+    return unit !== 'kT' && !validTemperature(uiState.temperature) ? 'kT' : unit;
+  }
+
+  // Mirrors src.units.thermal_energy: k_B T in the unit, 1 for kT.
+  function thermalEnergy(unit) {
+    var kB = energyUnits[unit].k_B;
+    return kB == null ? 1 : kB * uiState.temperature;
+  }
+
+  // Mirrors _scale_value_label in plots_interactive.py.
+  function valueLabel(mode) {
+    if (mode === 'free_energy') return 'F (' + energyUnits[shownUnit()].label + ')';
+    return scaleModes[mode].value_label;
+  }
+
+  // Mirrors _hovertemplate in plots_interactive.py.
+  function hoverTemplate(label, zFormat) {
+    return (
+      pairInfo.x_label + ': %{x:.1f}<br>' +
+      pairInfo.y_label + ': %{y:.1f}<br>' +
+      label + ': %{z:' + zFormat + '}<extra></extra>'
+    );
+  }
+
+  function displayGrid(mode) {
+    var grid = scale.grids[mode];
+    if (mode !== 'free_energy') return grid;
+    var factor = thermalEnergy(shownUnit());
+    return grid.map(function (row) {
+      return row.map(function (v) { return v === null ? null : v * factor; });
+    });
+  }
+
+  function scaleKey() {
+    var mode = scaleMode();
+    return mode === 'free_energy' ? mode + '|' + shownUnit() + '|' + uiState.temperature : mode;
+  }
+
+  function syncScaleControls() {
+    var mode = scaleMode();
+    for (var i = 0; i < segmentEls.length; i++) {
+      segmentEls[i].setAttribute('aria-pressed', String(segmentEls[i].dataset.scale === mode));
+    }
+    if (feControlsEl) feControlsEl.hidden = mode !== 'free_energy';
+    if (feHintEl) {
+      var wanted = energyUnits[uiState.unit] ? uiState.unit : 'kT';
+      var missing = wanted !== shownUnit();
+      feHintEl.hidden = !missing;
+      feHintEl.textContent = missing
+        ? 'Enter a temperature to show ' + energyUnits[wanted].label + '; showing kT'
+        : '';
+    }
+    setText('hdr-scale-mode', valueLabel(mode));
+    if (subtitleEl && scaleModes[mode].subtitle) subtitleEl.textContent = scaleModes[mode].subtitle;
+  }
+
+  function applyScale() {
+    scaleFrameRequested = false;
+    var key = scaleKey();
+    if (key !== shownScaleKey && gd && window.Plotly) {
+      var mode = scaleMode();
+      var label = valueLabel(mode);
+      currentGrid = displayGrid(mode);
+      Plotly.restyle(gd, {
+        z: [currentGrid],
+        hovertemplate: hoverTemplate(label, scaleModes[mode].z_format),
+        'colorbar.title.text': label
+      }, [0]);
+      shownScaleKey = key;
+    }
+    syncScaleControls();
+    if (lastReadout) updateReadout(lastReadout.pt, lastReadout.bin);
+  }
+
+  // Coalesce typing in the temperature field to one restyle per frame.
+  function requestScaleUpdate() {
+    if (scaleFrameRequested) return;
+    scaleFrameRequested = true;
+    window.requestAnimationFrame(applyScale);
+  }
+
+  if (scale) {
+    // The figure was built in this state, so nothing is restyled on load.
+    currentGrid = displayGrid(scaleMode());
+    shownScaleKey = scaleKey();
+    (scale.energy_units || []).forEach(function (u) {
+      var option = document.createElement('option');
+      option.value = u.key;
+      option.textContent = u.label;
+      unitSelect.appendChild(option);
+    });
+    unitSelect.value = shownUnit();
+    uiState.unit = unitSelect.value;
+    if (validTemperature(uiState.temperature)) tempInput.value = String(uiState.temperature);
+
+    for (var si = 0; si < segmentEls.length; si++) {
+      segmentEls[si].addEventListener('click', function (event) {
+        uiState.scale_mode = event.currentTarget.dataset.scale;
+        requestScaleUpdate();
+      });
+    }
+    tempInput.addEventListener('input', function () {
+      var t = parseFloat(tempInput.value);
+      uiState.temperature = validTemperature(t) ? t : null;
+      requestScaleUpdate();
+    });
+    unitSelect.addEventListener('change', function () {
+      uiState.unit = unitSelect.value;
+      requestScaleUpdate();
+    });
+    syncScaleControls();
+    scaleControlsEl.hidden = false;
   }
 
   // -------------------------------------------------------------------

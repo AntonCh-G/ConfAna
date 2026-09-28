@@ -749,3 +749,169 @@ def test_make_density_interactive_invalid_highlight_dof_atoms_raises(tmp_path, v
             tmp_path / "bad.html",
             config=_interactive_cfg(highlight_dof_atoms=value),
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice 4: colour-scale modes, temperature and energy unit
+# ---------------------------------------------------------------------------
+
+
+def _plot_figure(content: str) -> tuple[list, dict]:
+    """Return (data, layout) of the Plotly.newPlot call in the page."""
+    decoder = json.JSONDecoder()
+    # The fragment's call passes the div id as a string literal; the inlined
+    # Plotly library and viewer.js mention Plotly.newPlot( without one.
+    match = re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*', content)
+    assert match, "no Plotly.newPlot call for the figure"
+    rest = content[match.end():]
+    data, end = decoder.raw_decode(rest)
+    rest = rest[end:].lstrip()[1:].lstrip()
+    layout, _ = decoder.raw_decode(rest)
+    return data, layout
+
+
+def _plotly_array(value) -> np.ndarray:
+    """Decode a Plotly figure array (plain list or base64 typed array)."""
+    if isinstance(value, dict) and "bdata" in value:
+        import base64
+
+        arr = np.frombuffer(base64.b64decode(value["bdata"]), dtype=np.dtype(value["dtype"]))
+        shape = value.get("shape")
+        return arr.reshape([int(n) for n in str(shape).split(",")]) if shape else arr
+    return np.array(value, dtype=float)
+
+
+def _counts_df() -> pd.DataFrame:
+    """Frames in three bins of a 3×3 grid on [0, 3): counts 4, 2, 1."""
+    points = [(0.5, 0.5)] * 4 + [(1.5, 0.5)] * 2 + [(2.5, 2.5)]
+    df = _make_angle_df(n=len(points))
+    df["carboxyl_plane"] = [p[0] for p in points]
+    df["ester_plane"] = [p[1] for p in points]
+    return df
+
+
+def _grid_pair() -> CoordinatePair:
+    return CoordinatePair(
+        name="plane",
+        x_col="carboxyl_plane",
+        y_col="ester_plane",
+        x_label="X",
+        y_label="Y",
+        title="Grid",
+        x_domain=(0.0, 3.0),
+        y_domain=(0.0, 3.0),
+        bins=3,
+    )
+
+
+def _build(tmp_path, config=None, df=None, name="scale.html") -> tuple[dict, str]:
+    outpath = tmp_path / name
+    make_density_interactive(df if df is not None else _counts_df(), _grid_pair(), outpath, config=config)
+    content = outpath.read_text(encoding="utf-8")
+    return _page_data(content), content
+
+
+def test_scale_grids_embedded_for_every_mode(tmp_path):
+    data, _ = _build(tmp_path)
+    grids = data["scale"]["grids"]
+    assert set(grids) == {"counts", "log_counts", "free_energy"}
+    # Rows are y bins, columns x bins; unsampled bins are null in every mode.
+    assert grids["counts"] == [[4, 2, None], [None, None, None], [None, None, 1]]
+    assert grids["log_counts"][0][0] == pytest.approx(np.log10(5.0), abs=1e-4)
+    assert grids["free_energy"][0] == [0.0, pytest.approx(np.log(2.0), abs=1e-4), None]
+    assert grids["free_energy"][2][2] == pytest.approx(np.log(4.0), abs=1e-4)
+    for mode in grids:
+        assert grids[mode][1] == [None, None, None]
+
+
+def test_scale_embeds_unit_table_and_modes(tmp_path):
+    from src.units import energy_unit_table
+
+    data, _ = _build(tmp_path)
+    assert data["scale"]["energy_units"] == energy_unit_table()
+    assert set(data["scale"]["modes"]) == {"counts", "log_counts", "free_energy"}
+
+
+def test_default_scale_follows_log_scale_when_unset(tmp_path):
+    data, _ = _build(tmp_path)
+    assert data["ui_state"]["scale_mode"] == "log_counts"
+    data, _ = _build(tmp_path, config={"plots": {"density": {"log_scale": False}}}, name="c.html")
+    assert data["ui_state"]["scale_mode"] == "counts"
+
+
+def test_free_energy_defaults_fall_back_to_transitions(tmp_path):
+    cfg = {"transitions": {"temperature": 310.0, "energy_unit": "eV"}}
+    data, _ = _build(tmp_path, config=cfg)
+    assert data["ui_state"]["temperature"] == 310.0
+    assert data["ui_state"]["unit"] == "eV"
+
+
+def test_free_energy_config_overrides_transitions(tmp_path):
+    cfg = {
+        "transitions": {"temperature": 310.0, "energy_unit": "eV"},
+        "plots": {"interactive": {"free_energy": {"temperature": 250, "unit": "cm^-1"}}},
+    }
+    data, _ = _build(tmp_path, config=cfg)
+    assert data["ui_state"]["temperature"] == 250.0
+    assert data["ui_state"]["unit"] == "cm^-1"
+
+
+def test_free_energy_without_temperature_opens_in_kt(tmp_path):
+    cfg = {"plots": {"interactive": {"free_energy": {"unit": "kJ/mol"}}}}
+    data, _ = _build(tmp_path, config=cfg)
+    assert data["ui_state"]["temperature"] is None
+    assert data["ui_state"]["unit"] == "kT"
+    data, _ = _build(tmp_path, name="none.html")
+    assert (data["ui_state"]["temperature"], data["ui_state"]["unit"]) == (None, "kT")
+
+
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        ({"plots": {"interactive": {"free_energy": {"unit": "hartree"}}}},
+         "plots.interactive.free_energy.unit"),
+        ({"transitions": {"temperature": 300.0, "energy_unit": "kcal"}}, "transitions.energy_unit"),
+        ({"plots": {"interactive": {"free_energy": {"temperature": 0}}}},
+         "plots.interactive.free_energy.temperature"),
+        ({"transitions": {"temperature": -5.0}}, "transitions.temperature"),
+        ({"plots": {"interactive": {"default_scale": "free-energy"}}}, "default_scale"),
+        ({"plots": {"interactive": {"free_energy": 300}}}, "plots.interactive.free_energy"),
+    ],
+)
+def test_invalid_scale_config_raises(tmp_path, config, match):
+    with pytest.raises(ValueError, match=re.escape(match)):
+        _build(tmp_path, config=config)
+
+
+def test_initial_figure_matches_free_energy_default(tmp_path):
+    from src.units import thermal_energy
+
+    cfg = {
+        "transitions": {"temperature": 300.0, "energy_unit": "kJ/mol"},
+        "plots": {"interactive": {"default_scale": "free_energy"}},
+    }
+    data, content = _build(tmp_path, config=cfg)
+    assert data["ui_state"]["scale_mode"] == "free_energy"
+    fig_data, _ = _plot_figure(content)
+    trace = fig_data[0]
+    z = _plotly_array(trace["z"])
+    grid = np.array(data["scale"]["grids"]["free_energy"], dtype=float)
+    np.testing.assert_array_equal(z, grid * thermal_energy("kJ/mol", 300.0))
+    assert trace["colorbar"]["title"]["text"] == "F (kJ/mol)"
+    assert "F (kJ/mol): %{z:.3f}" in trace["hovertemplate"]
+    assert data["header"]["scale_mode_label"] == "F (kJ/mol)"
+    assert "Population-derived free-energy-like surface" in content
+
+
+def test_density_modes_keep_density_subtitle(tmp_path):
+    _, content = _build(tmp_path)
+    assert "Coordinate-density landscape — not a potential energy surface" in content
+    assert "Population-derived" not in content.split("<script")[0]
+
+
+def test_scale_controls_markup_present(tmp_path):
+    _, content = _build(tmp_path)
+    for mode in ("log_counts", "counts", "free_energy"):
+        assert f'data-scale="{mode}"' in content
+    assert 'id="fe-temperature"' in content
+    assert 'id="fe-unit"' in content

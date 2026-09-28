@@ -398,3 +398,40 @@ def test_make_transition_png_with_barrier_panel(tmp_path):
         config={"transitions_plot": {"colormap_barriers": "YlOrRd"}},
     )
     assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# population_free_energy
+# ---------------------------------------------------------------------------
+
+
+def test_population_free_energy_properties():
+    from src.density import population_free_energy
+
+    counts = np.array([[0, 1, 4], [16, 2, 0]])
+    fe = population_free_energy(counts)
+
+    assert fe.shape == counts.shape
+    # Most-populated bin is 0 (and not -0.0).
+    assert fe[1, 0] == 0.0 and not np.signbit(fe[1, 0])
+    # Unsampled bins are NaN.
+    assert np.isnan(fe[0, 0]) and np.isnan(fe[1, 2])
+    sampled = counts > 0
+    assert np.all(fe[sampled] >= 0.0)
+    np.testing.assert_allclose(fe[sampled], -np.log(counts[sampled] / 16.0))
+    # Monotone: more frames → lower value.
+    order = np.argsort(counts[sampled])
+    assert np.all(np.diff(fe[sampled][order]) <= 0.0)
+
+
+def test_population_free_energy_all_empty_is_nan():
+    from src.density import population_free_energy
+
+    assert np.all(np.isnan(population_free_energy(np.zeros((3, 3)))))
+
+
+def test_population_free_energy_rejects_negative_counts():
+    from src.density import population_free_energy
+
+    with pytest.raises(ValueError, match="non-negative"):
+        population_free_energy(np.array([1, -1]))
