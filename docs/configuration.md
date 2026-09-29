@@ -7,7 +7,7 @@ local copy such as `configs/default.yaml` (the `configs/` folder is git-ignored)
 
 ## Config sections
 
-The workflow is driven by YAML config. Create or update a local config under `configs/`, for example [configs/default.yaml](../configs/default.yaml).
+The workflow is driven by YAML config. Start from an example in [examples/](../examples/) and keep your own copies under `configs/` (git-ignored).
 
 Important sections include:
 

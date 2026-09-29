@@ -2,6 +2,10 @@
 name = "confana"
 version = "0.1.1"
 description = "Conformer analysis workflow for PIMD/MD trajectories"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Anton Charkin-Gorbulin" }]
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",
@@ -23,11 +27,14 @@ dev = [
     "pytest-cov",
 ]
 
+[project.urls]
+Repository = "https://github.com/AntonCh-G/ConfAna"
+
 [project.scripts]
 confana = "src.cli:cli"
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

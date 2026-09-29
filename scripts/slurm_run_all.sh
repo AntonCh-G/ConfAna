@@ -18,5 +18,5 @@ elif [ -f ".venv/bin/activate" ]; then
   source ".venv/bin/activate"
 fi
 
-CONFIG_PATH="${CONFIG_PATH:-configs/default.yaml}"
+CONFIG_PATH="${CONFIG_PATH:-examples/md17_aspirin.yaml}"
 confana run-all --config "${CONFIG_PATH}"
