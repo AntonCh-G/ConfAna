@@ -22,7 +22,7 @@ $inline_css
       <nav id="pair-nav" class="ca-pair-nav" aria-label="Coordinate pairs" hidden></nav>
     </div>
     <div class="ca-header-sub">
-      <span id="hdr-subtitle" class="ca-subtitle">$subtitle</span>
+      <span class="ca-subtitle-stack"><span id="hdr-subtitle" class="ca-subtitle">$subtitle</span></span>
       <div id="scale-controls" class="ca-scale-controls" hidden>
         <div class="ca-segmented" role="group" aria-label="Colour scale">
           <button type="button" class="ca-segment" data-scale="log_counts">log counts</button>
@@ -53,7 +53,10 @@ $plot_fragment
       <section id="preview-metadata" class="ca-preview-meta" hidden>
         <div id="preview-status" class="ca-preview-status">Hover over the map to preview a bin</div>
         <div id="preview-readout" class="ca-readout"></div>
-        <div id="preview-meta" class="ca-card-meta"></div>
+        <details class="ca-more">
+          <summary>More info</summary>
+          <div id="preview-meta" class="ca-card-meta"></div>
+        </details>
       </section>
       <div id="panel-notice" class="ca-notice" role="status" aria-live="polite" hidden></div>
       <section id="comparison-tray">

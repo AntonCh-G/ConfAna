@@ -189,23 +189,44 @@ def pages(tmp_path_factory) -> dict[str, Path]:
     return out
 
 
+# One Playwright session for both browsers: a second sync session cannot
+# start while the first is running.
 @pytest.fixture(scope="module")
-def browser():
-    with sync_api.sync_playwright() as playwright:
-        try:
-            chromium = playwright.chromium.launch(
-                channel="chromium",
-                headless=True,
-                args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
-            )
-        except sync_api.Error as exc:
-            pytest.skip(
-                "Playwright's Chromium is not installed "
-                f"({str(exc).splitlines()[0]}); run "
-                "`python -m playwright install chromium --no-shell`."
-            )
-        yield chromium
-        chromium.close()
+def playwright():
+    with sync_api.sync_playwright() as session:
+        yield session
+
+
+@pytest.fixture(scope="module")
+def browser(playwright):
+    try:
+        chromium = playwright.chromium.launch(
+            channel="chromium",
+            headless=True,
+            args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+        )
+    except sync_api.Error as exc:
+        pytest.skip(
+            "Playwright's Chromium is not installed "
+            f"({str(exc).splitlines()[0]}); run "
+            "`python -m playwright install chromium --no-shell`."
+        )
+    yield chromium
+    chromium.close()
+
+
+@pytest.fixture(scope="module")
+def firefox(playwright):
+    """Firefox, for behaviour where it differs from Chromium (3Dmol canvas reuse)."""
+    try:
+        browser = playwright.firefox.launch(headless=True)
+    except sync_api.Error as exc:
+        pytest.skip(
+            "Playwright's Firefox is not installed "
+            f"({str(exc).splitlines()[0]}); run `python -m playwright install firefox`."
+        )
+    yield browser
+    browser.close()
 
 
 class _Page:
@@ -308,19 +329,67 @@ class _Page:
         )
 
     def atom_styles(self, selector: str) -> list[dict]:
-        """Element and stick/sphere colour of each atom in the 3Dmol viewer at *selector*."""
+        """Element, stick/sphere style and halo colour of each atom in the viewer at *selector*."""
         return self.page.evaluate(
             """(selector) => {
               const v = document.querySelector(selector)._viewer3d;
+              const halos = new Map((v._caHalos || []).map((h) => [h.index, h.color]));
               return v.getModel().selectedAtoms({}).map((a) => ({
                 index: a.index,
                 elem: a.elem,
                 stick: a.style.stick ? String(a.style.stick.color) : null,
-                sphere: a.style.sphere ? String(a.style.sphere.color) : null,
+                stick_scheme: a.style.stick ? a.style.stick.colorscheme || null : null,
+                stick_radius: a.style.stick ? a.style.stick.radius : null,
+                sphere: !!a.style.sphere,
+                halo: halos.has(a.index) ? halos.get(a.index) : null,
               }));
             }""",
             selector,
         )
+
+    def viewer_counts(self, selector: str) -> dict:
+        """Number of shapes and labels drawn in the viewer at *selector*."""
+        return self.page.evaluate(
+            """(selector) => {
+              const v = document.querySelector(selector)._viewer3d;
+              return {shapes: v.shapes.length, labels: v.labels.length};
+            }""",
+            selector,
+        )
+
+    def camera(self, selector: str) -> list[float]:
+        """Rotation and zoom of the viewer at *selector* (3Dmol getView 3-7)."""
+        return self.page.evaluate(
+            "(selector) => document.querySelector(selector)._viewer3d.getView().slice(3, 8)",
+            selector,
+        )
+
+    def drag(self, selector: str, dx: float, dy: float) -> None:
+        """Drag across the element at *selector*, as a person turns a 3D view.
+
+        Waits for the element to stop moving first: a new pin smooth-scrolls
+        the side panel, and a drag during that scroll lands off target.
+        """
+        self.page.wait_for_function(
+            """(sel) => new Promise((resolve) => {
+              const el = document.querySelector(sel);
+              const top = () => el.getBoundingClientRect().top;
+              const before = top();
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                // Settled, and the drag point really lands on the element.
+                const r = el.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                resolve(top() === before && !!hit && el.contains(hit));
+              }));
+            })""",
+            arg=selector,
+        )
+        box = self.page.locator(selector).bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        self.page.mouse.move(x, y)
+        self.page.mouse.down()
+        self.page.mouse.move(x + dx, y + dy, steps=5)
+        self.page.mouse.up()
 
     def scale_state(self) -> dict:
         """Heatmap z/labels and the scale controls, as the page shows them."""
@@ -403,6 +472,15 @@ class _Page:
 
 @pytest.fixture
 def open_page(browser):
+    yield from _page_opener(browser)
+
+
+@pytest.fixture
+def open_firefox_page(firefox):
+    yield from _page_opener(firefox)
+
+
+def _page_opener(browser):
     opened: list[_Page] = []
 
     def _open(path: Path, init_script: str | None = None) -> _Page:
@@ -567,15 +645,22 @@ def test_cdn_3dmol_offline_shows_fallback(open_page, pages):
 # ---------------------------------------------------------------------------
 
 
-def _expected_atom_colors(page: _Page) -> list[tuple[str | None, str]]:
-    """(sphere colour, stick colour) per atom for _X_ATOMS / _Y_ATOMS."""
+def _expected_atom_colors(page: _Page) -> list[tuple[bool, str | None]]:
+    """(drawn as ball, halo colour) per atom for _X_ATOMS / _Y_ATOMS."""
     x, y, both = (page.css_var(f"--ca-axis-{g}") for g in ("x", "y", "both"))
-    neutral = page.css_var("--ca-atom-neutral")
-    return [(x, x), (both, both), (y, y), (None, neutral), (None, neutral)]
+    return [(True, x), (True, both), (True, y), (False, None), (False, None)]
 
 
-def _atom_colors(styles: list[dict]) -> list[tuple[str | None, str]]:
-    return [(a["sphere"], a["stick"]) for a in styles]
+def _atom_colors(styles: list[dict]) -> list[tuple[bool, str | None]]:
+    return [(a["sphere"], a["halo"]) for a in styles]
+
+
+def _assert_element_coloured(styles: list[dict]) -> None:
+    """Every stick takes its element's colour, and axis atoms get thicker bonds."""
+    assert all(a["stick_scheme"] == "Jmol" and a["stick"] in ("None", "undefined") for a in styles)
+    axis = {a["stick_radius"] for a in styles if a["halo"]}
+    other = {a["stick_radius"] for a in styles if not a["halo"]}
+    assert len(axis) == len(other) == 1 and axis.pop() > other.pop()
 
 
 def test_axis_atoms_highlighted_by_file_index_in_preview(open_page, pages):
@@ -589,6 +674,9 @@ def test_axis_atoms_highlighted_by_file_index_in_preview(open_page, pages):
     assert [a["index"] for a in styles] == list(range(len(_ELEMENTS)))
     assert [a["elem"] for a in styles] == _ELEMENTS
     assert _atom_colors(styles) == _expected_atom_colors(page)
+    _assert_element_coloured(styles)
+    # One halo shape per axis atom, and no index labels until asked for.
+    assert page.viewer_counts("#preview-viewer") == {"shapes": 3, "labels": 0}
     assert page.errors == []
 
 
@@ -635,8 +723,53 @@ def test_theme_toggle_recolours_highlighted_atoms(open_page, pages):
     page.wait_until("document.documentElement.dataset.theme === 'dark'")
     dark_x = page.css_var("--ca-axis-x")
     assert dark_x != light_x
-    assert page.atom_styles("#preview-viewer")[0]["sphere"] == dark_x
+    assert page.atom_styles("#preview-viewer")[0]["halo"] == dark_x
     assert page.axis_title_colors()["x"] == dark_x
+    # Restyling replaces the halos rather than stacking new ones.
+    assert page.viewer_counts("#preview-viewer")["shapes"] == 3
+
+
+def test_atom_index_toggle_labels_every_atom(open_page, pages):
+    page = open_page(pages["highlight"])
+    page.click(page.bins()["full"][0])
+    page.card_count_is(1)
+    card = "#comparison-cards .comparison-viewer"
+    assert page.viewer_counts(card)["labels"] == 0
+
+    page.page.check("#atom-index-toggle")
+    assert page.viewer_counts(card) == {"shapes": 3, "labels": len(_ELEMENTS)}
+    page.page.uncheck("#atom-index-toggle")
+    assert page.viewer_counts(card) == {"shapes": 3, "labels": 0}
+    assert page.errors == []
+
+
+def test_pinned_cards_share_the_preview_camera(open_page, pages):
+    page = open_page(pages["bin"])
+    bins = page.bins()["full"]
+    page.hover(bins[0])
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {bins[0]['key']}'")
+    start = page.camera("#preview-viewer")
+    page.drag("#preview-viewer", 60, 30)
+    turned = page.camera("#preview-viewer")
+    assert turned != pytest.approx(start)
+
+    # A new pin opens in the camera the preview was turned to.
+    page.click(bins[1])
+    page.click(bins[2])
+    page.card_count_is(2)
+    first, second = (
+        f'#comparison-cards .ca-card[data-pin="{n}"] .comparison-viewer' for n in (1, 2)
+    )
+    assert page.camera(first) == pytest.approx(turned)
+    assert page.camera(second) == pytest.approx(turned)
+
+    # Turning one card turns the preview and the other card with it.
+    page.drag(first, -40, 50)
+    moved = page.camera(first)
+    assert moved != pytest.approx(turned)
+    assert page.camera(second) == pytest.approx(moved)
+    assert page.camera("#preview-viewer") == pytest.approx(moved)
+    assert page.errors == []
 
 
 def test_page_without_axis_atoms_keeps_element_colours(open_page, pages):
@@ -645,7 +778,9 @@ def test_page_without_axis_atoms_keeps_element_colours(open_page, pages):
     page.hover(first)
     page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
     styles = page.atom_styles("#preview-viewer")
-    assert all(a["sphere"] is None and a["stick"] in ("None", "undefined") for a in styles)
+    assert all(not a["sphere"] and a["halo"] is None for a in styles)
+    assert all(a["stick_scheme"] == "Jmol" and a["stick"] in ("None", "undefined") for a in styles)
+    assert page.viewer_counts("#preview-viewer")["shapes"] == 0
     assert page.axis_title_colors() == {"x": None, "y": None}
     assert page.page.evaluate("document.getElementById('axis-legend').hidden") is True
 
@@ -662,22 +797,54 @@ def _scaled(grid: list[list], factor: float) -> list[list]:
     return [[None if v is None else v * factor for v in row] for row in grid]
 
 
+def _grids(data: dict) -> dict[str, list[list]]:
+    """Every scale mode's grid, as Python builds it from the embedded counts.
+
+    The page derives the same grids itself (scaleGrids in viewer.js)."""
+    from src.payload_codec import decode_count_grid
+    from src.plots_interactive import _scale_grids
+
+    counts = data["scale"]["counts"]
+    counts = decode_count_grid(counts) if isinstance(counts, dict) else np.array(
+        [[0 if v is None else v for v in row] for row in counts]
+    )
+    return {
+        mode: [[None if np.isnan(v) else float(v) for v in row] for row in grid.tolist()]
+        for mode, grid in _scale_grids(counts).items()
+    }
+
+
+def _same_grid(actual: list[list], expected: list[list]) -> bool:
+    """Equal cell by cell; the figure stores float32, so allow its rounding."""
+    if len(actual) != len(expected):
+        return False
+    for row_a, row_e in zip(actual, expected):
+        if len(row_a) != len(row_e):
+            return False
+        for a, e in zip(row_a, row_e):
+            if (a is None) != (e is None):
+                return False
+            if a is not None and a != pytest.approx(e, rel=1e-6, abs=1e-6):
+                return False
+    return True
+
+
 def _k_b(data: dict, unit: str) -> float:
     return next(u["k_B"] for u in data["scale"]["energy_units"] if u["key"] == unit)
 
 
 def test_scale_toggle_swaps_grids_and_labels(open_page, pages):
     page = open_page(pages["bin"])
-    grids = page.page_data()["scale"]["grids"]
+    grids = _grids(page.page_data())
     initial = page.scale_state()
     assert initial["pressed"] == ["log_counts"]
-    assert initial["z"] == grids["log_counts"]
+    assert _same_grid(initial["z"], grids["log_counts"])
     assert initial["feHidden"] is True
 
     page.page.click('[data-scale="counts"]')
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'count'")
     state = page.scale_state()
-    assert state["z"] == grids["counts"]
+    assert _same_grid(state["z"], grids["counts"])
     assert (state["colorbar"], state["header"], state["pressed"]) == ("count", "count", ["counts"])
     assert "count: %{z:.0f}" in state["hovertemplate"]
     assert state["subtitle"] == _DENSITY_SUBTITLE
@@ -686,16 +853,18 @@ def test_scale_toggle_swaps_grids_and_labels(open_page, pages):
     page.page.click('[data-scale="free_energy"]')
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kT)'")
     state = page.scale_state()
-    assert state["z"] == grids["free_energy"]
+    assert _same_grid(state["z"], grids["free_energy"])
     assert state["colorbar"] == "F (kT)"
     assert state["feHidden"] is False
     assert state["subtitle"] == _FE_SUBTITLE
 
-    # Back to the start: the page rebuilds exactly what Python built.
+    # Back to the start: the page rebuilds what Python built (the figure
+    # holds float32, the page's own grid full doubles).
     page.page.click('[data-scale="log_counts"]')
     page.wait_until("document.getElementById('hdr-scale-mode').textContent.startsWith('log')")
     state = page.scale_state()
-    for key in ("z", "colorbar", "hovertemplate", "header", "subtitle"):
+    assert _same_grid(state["z"], initial["z"])
+    for key in ("colorbar", "hovertemplate", "header", "subtitle"):
         assert state[key] == initial[key], key
     assert page.errors == []
 
@@ -703,37 +872,73 @@ def test_scale_toggle_swaps_grids_and_labels(open_page, pages):
 def test_temperature_and_unit_rescale_free_energy(open_page, pages):
     page = open_page(pages["bin"])
     data = page.page_data()
-    fe = data["scale"]["grids"]["free_energy"]
+    fe = _grids(data)["free_energy"]
     page.page.click('[data-scale="free_energy"]')
 
     page.page.select_option("#fe-unit", "kJ/mol")
     page.wait_until("!document.getElementById('fe-hint').hidden")
     state = page.scale_state()
     assert state["hint"] == "Enter a temperature to show kJ/mol; showing kT"
-    assert state["z"] == fe and state["colorbar"] == "F (kT)"
+    assert _same_grid(state["z"], fe) and state["colorbar"] == "F (kT)"
 
     page.page.fill("#fe-temperature", "300")
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kJ/mol)'")
     state = page.scale_state()
     assert state["hint"] is None
     assert state["colorbar"] == "F (kJ/mol)"
-    assert state["z"] == _scaled(fe, _k_b(data, "kJ/mol") * 300.0)
+    assert _same_grid(state["z"], _scaled(fe, _k_b(data, "kJ/mol") * 300.0))
 
     page.page.fill("#fe-temperature", "600")
     page.wait_until(
         "document.getElementsByClassName('plotly-graph-div')[0]._fullData[0].z"
         f".flat().some((v) => Math.abs(v - {max(v for r in fe for v in r if v) * _k_b(data, 'kJ/mol') * 600.0}) < 1e-9)"
     )
-    assert page.scale_state()["z"] == _scaled(fe, _k_b(data, "kJ/mol") * 600.0)
+    assert _same_grid(page.scale_state()["z"], _scaled(fe, _k_b(data, "kJ/mol") * 600.0))
 
     page.page.select_option("#fe-unit", "cm^-1")
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (cm⁻¹)'")
-    assert page.scale_state()["z"] == _scaled(fe, _k_b(data, "cm^-1") * 600.0)
+    assert _same_grid(page.scale_state()["z"], _scaled(fe, _k_b(data, "cm^-1") * 600.0))
 
     # kT ignores the temperature.
     page.page.select_option("#fe-unit", "kT")
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kT)'")
-    assert page.scale_state()["z"] == fe
+    assert _same_grid(page.scale_state()["z"], fe)
+    assert page.errors == []
+
+
+def _layout_boxes(page) -> dict:
+    """Map plot area and header height, rounded to whole pixels."""
+    return page.page.evaluate(
+        """() => {
+          const r = (b) => [b.x, b.y, b.width, b.height].map(Math.round);
+          return {
+            plot: r(document.querySelector('.nsewdrag').getBoundingClientRect()),
+            header: Math.round(document.querySelector('.ca-header').getBoundingClientRect().height),
+          };
+        }"""
+    )
+
+
+def test_scale_switch_keeps_map_and_header_size(open_page, pages):
+    page = open_page(pages["bin"])
+    initial = _layout_boxes(page)
+
+    page.page.click('[data-scale="counts"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'count'")
+    assert _layout_boxes(page) == initial
+
+    # Free-energy mode shows its controls, a longer subtitle and, with no
+    # temperature, a hint: none of them may move or resize the map.
+    page.page.click('[data-scale="free_energy"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kT)'")
+    assert _layout_boxes(page) == initial
+    page.page.select_option("#fe-unit", "kJ/mol")
+    page.wait_until("!document.getElementById('fe-hint').hidden")
+    assert _layout_boxes(page) == initial
+
+    page.page.click('[data-scale="log_counts"]')
+    page.wait_until("document.getElementById('hdr-scale-mode').textContent.startsWith('log')")
+    assert _layout_boxes(page) == initial
     assert page.errors == []
 
 
@@ -745,16 +950,17 @@ def test_free_energy_default_page_opens_as_configured(open_page, pages):
     assert (state["temperature"], state["unit"]) == ("300", "kJ/mol")
     assert state["colorbar"] == state["header"] == "F (kJ/mol)"
     assert state["subtitle"] == _FE_SUBTITLE
-    assert state["z"] == _scaled(data["scale"]["grids"]["free_energy"], _k_b(data, "kJ/mol") * 300.0)
+    assert _same_grid(state["z"], _scaled(_grids(data)["free_energy"], _k_b(data, "kJ/mol") * 300.0))
 
-    # Switch away and back: the page's own formula must give exactly the
-    # numbers Python baked into the figure.
+    # Switch away and back: the page's own formula must give the numbers
+    # Python baked into the figure (up to the figure's float32 rounding).
     page.page.click('[data-scale="counts"]')
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'count'")
     page.page.click('[data-scale="free_energy"]')
     page.wait_until("document.getElementById('hdr-scale-mode').textContent === 'F (kJ/mol)'")
     rebuilt = page.scale_state()
-    for key in ("z", "colorbar", "hovertemplate"):
+    assert _same_grid(rebuilt["z"], state["z"])
+    for key in ("colorbar", "hovertemplate"):
         assert rebuilt[key] == state[key], key
 
 
@@ -766,8 +972,9 @@ def test_readout_shows_scaled_value_and_raw_count(open_page, pages):
     page.hover(first)
     page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
     text = page.page.evaluate("document.getElementById('preview-readout').innerText")
-    count = data["scale"]["grids"]["counts"][yi][xi]
-    value = data["scale"]["grids"]["free_energy"][yi][xi] * _k_b(data, "kJ/mol") * 300.0
+    grids = _grids(data)
+    count = int(grids["counts"][yi][xi])
+    value = grids["free_energy"][yi][xi] * _k_b(data, "kJ/mol") * 300.0
     lines = dict(line.split(": ", 1) for line in text.splitlines() if ": " in line)
     assert float(lines["F (kJ/mol)"]) == pytest.approx(value, rel=1e-5)
     assert lines["count"] == str(count)
@@ -985,7 +1192,7 @@ def test_compressed_page_embeds_no_plain_blocks(open_page, pages):
     page = open_page(pages["bin"])
     data = page.page_data()
     assert data["bin_xyz_payloads"] is None and data["bin_frame_metadata"] is None
-    assert data["bin_xyz_payloads_encoded"]["format"] == "confana-structures-v1"
+    assert data["bin_xyz_payloads_encoded"]["format"] == "confana-structures-v2"
     assert data["bin_frame_metadata_encoded"]["format"] == "confana-columns-v1"
 
 
@@ -1019,6 +1226,30 @@ def test_compressed_metadata_matches_the_plain_page(open_page, pages):
         )
         assert page.errors == []
     assert meta["bin"] == meta["plain"]
+
+
+def test_frame_metadata_is_collapsed_until_asked_for(open_page, pages):
+    """Hover and pin both keep frame metadata behind a closed 'More info'."""
+    page = open_page(pages["bin"])
+    target = page.bins()["full"][0]
+    page.hover(target)
+    page.wait_until(
+        f"document.getElementById('preview-status').textContent === 'Bin {target['key']}'"
+    )
+    preview_meta = page.page.locator("#preview-meta")
+    assert "source_file" in preview_meta.text_content()
+    assert not preview_meta.is_visible()
+    page.page.locator("#preview-metadata .ca-more > summary").click()
+    assert preview_meta.is_visible()
+
+    page.click(target)
+    page.card_count_is(1)
+    card_meta = page.card(1).locator(".ca-card-meta")
+    assert not card_meta.is_visible()
+    page.card(1).locator(".ca-more > summary").click()
+    assert card_meta.is_visible()
+    assert "source_file" in card_meta.inner_text()
+    assert page.errors == []
 
 
 def test_plain_per_frame_page_still_pins(open_page, pages):
@@ -1112,7 +1343,16 @@ def test_per_frame_pin_is_a_ring_without_bin_outline(open_page, pages):
 
 
 def test_closed_pin_number_is_reused_and_cards_go_by_number(open_page, pages):
-    page = open_page(pages["bin"])
+    _close_and_repin(open_page(pages["bin"]))
+
+
+def test_closed_pin_number_is_reused_in_firefox(open_firefox_page, pages):
+    """Firefox threw when a pooled 3D viewer rendered before its resize,
+    leaving the new pin with a card but no marker on the map."""
+    _close_and_repin(open_firefox_page(pages["bin"]))
+
+
+def _close_and_repin(page):
     bins = page.bins()["full"]
     for point in bins[:3]:
         page.click(point)
@@ -1128,6 +1368,9 @@ def test_closed_pin_number_is_reused_and_cards_go_by_number(open_page, pages):
         ".filter((a) => /^pin-\\d+$/.test(a.name)).length === 3"
     )
     assert sorted(m["name"] for m in page.pin_marks()) == ["pin-1", "pin-2", "pin-3"]
+    # The new pin 2 reuses the viewer the closed card gave back.
+    assert page.card(2).locator(".comparison-viewer canvas").count() == 1
+    assert page.card(2).locator(".ca-viewer-error").count() == 0
     assert page.errors == []
 
 

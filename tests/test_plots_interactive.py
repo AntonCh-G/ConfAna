@@ -814,17 +814,34 @@ def _build(tmp_path, config=None, df=None, name="scale.html") -> tuple[dict, str
     return _page_data(content), content
 
 
-def test_scale_grids_embedded_for_every_mode(tmp_path):
+def test_scale_embeds_the_count_grid_once(tmp_path):
+    """Only counts are embedded; the page derives the other modes' grids."""
+    from src.payload_codec import decode_count_grid
+
     data, _ = _build(tmp_path)
-    grids = data["scale"]["grids"]
+    assert "grids" not in data["scale"]
+    assert data["scale"]["grid_decimals"] == 4
+    block = data["scale"]["counts"]
+    assert (block["format"], block["dtype"], block["shape"]) == ("confana-count-grid-v1", "u2", [3, 3])
+    # Rows are y bins, columns x bins; 0 = unsampled.
+    assert decode_count_grid(block).tolist() == [[4, 2, 0], [0, 0, 0], [0, 0, 1]]
+
+
+def test_scale_counts_are_plain_json_without_compression(tmp_path):
+    data, _ = _build(tmp_path, config={"plots": {"interactive": {"compress_payloads": False}}})
+    assert data["scale"]["counts"] == [[4, 2, None], [None, None, None], [None, None, 1]]
+
+
+def test_scale_grids_cover_every_mode():
+    from src.plots_interactive import _scale_grids
+
+    grids = _scale_grids(np.array([[4, 2, 0], [0, 0, 0], [0, 0, 1]]))
     assert set(grids) == {"counts", "log_counts", "free_energy"}
-    # Rows are y bins, columns x bins; unsampled bins are null in every mode.
-    assert grids["counts"] == [[4, 2, None], [None, None, None], [None, None, 1]]
     assert grids["log_counts"][0][0] == pytest.approx(np.log10(5.0), abs=1e-4)
-    assert grids["free_energy"][0] == [0.0, pytest.approx(np.log(2.0), abs=1e-4), None]
+    assert grids["free_energy"][0][:2].tolist() == [0.0, pytest.approx(np.log(2.0), abs=1e-4)]
     assert grids["free_energy"][2][2] == pytest.approx(np.log(4.0), abs=1e-4)
-    for mode in grids:
-        assert grids[mode][1] == [None, None, None]
+    for grid in grids.values():
+        assert np.isnan(grid[1]).all() and np.isnan(grid[0][2])
 
 
 def test_scale_embeds_unit_table_and_modes(tmp_path):
@@ -897,9 +914,13 @@ def test_initial_figure_matches_free_energy_default(tmp_path):
     assert data["ui_state"]["scale_mode"] == "free_energy"
     fig_data, _ = _plot_figure(content)
     trace = fig_data[0]
+    from src.payload_codec import decode_count_grid
+    from src.plots_interactive import _scale_grids
+
     z = _plotly_array(trace["z"])
-    grid = np.array(data["scale"]["grids"]["free_energy"], dtype=float)
-    np.testing.assert_array_equal(z, grid * thermal_energy("kJ/mol", 300.0))
+    assert z.dtype == np.float32
+    grid = _scale_grids(decode_count_grid(data["scale"]["counts"]))["free_energy"]
+    np.testing.assert_allclose(z, grid * thermal_energy("kJ/mol", 300.0), rtol=1e-6)
     assert trace["colorbar"]["title"]["text"] == "F (kJ/mol)"
     assert "F (kJ/mol): %{z:.3f}" in trace["hovertemplate"]
     assert data["header"]["scale_mode_label"] == "F (kJ/mol)"

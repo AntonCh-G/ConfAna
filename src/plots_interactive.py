@@ -26,11 +26,13 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "pair": {"name", "x_col", "y_col", "x_label", "y_label", "title"},
       "header": {"frame_count", "bin_count_x", "bin_count_y", "scale_mode_label"},
       "scale": {                          # colour-scale modes (Slice 4)
-        "grids": {                        # rows = y bins, columns = x bins;
-          "counts": [[int | null]],       # null = unsampled bin (blank)
-          "log_counts": [[float | null]], # log10(count + 1)
-          "free_energy": [[float | null]] # dimensionless -ln(P / P_max)
-        },
+        # Frame counts per bin, rows = y bins, columns = x bins. The page
+        # derives the log_counts (log10(count + 1)) and free_energy
+        # (dimensionless -ln(P / P_max)) grids from it, rounded to
+        # grid_decimals like _scale_grids.
+        "counts": {"format", "shape", "dtype", "data"}  # compress_payloads: true
+                  | [[int | null]],       # compress_payloads: false; null = unsampled
+        "grid_decimals": int,
         "modes": {"<mode>": {"label", "value_label", "z_format", "subtitle"}},
         "colorscales": {"light": [[pos, color], ...], "dark": [...]},
         "energy_units": [{"key", "label", "k_B"}, ...]   # from src.units
@@ -148,6 +150,7 @@ import pandas as pd
 from collections.abc import Iterable
 
 from src.density import compute_2d_histogram, population_free_energy
+from src.payload_codec import encode_count_grid
 from src.models import CoordinatePair
 from src.states import build_bin_state_overlay, resolve_state_groupby
 from src.units import (
@@ -181,6 +184,10 @@ _BASE_META_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 _DENSITY_SUBTITLE = "Coordinate-density landscape — not a potential energy surface"
+
+# Right figure margin: fits the colour bar, its tick labels and its sideways
+# title in every scale mode, so the map keeps one size.
+_COLORBAR_MARGIN_PX = 120
 
 # Embedded as page data "scale.modes", so the page's labels come from here.
 # The free-energy value label depends on the unit and is built by
@@ -1014,12 +1021,16 @@ def make_density_interactive(
         )
     theme = interactive_cfg["theme"]
 
+    # float32 halves the embedded grid; it keeps ~7 significant digits,
+    # far more than the hover shows.
     heatmap = go.Heatmap(
-        z=Z,
+        z=Z.astype(np.float32),
         x=x_centres,
         y=y_centres,
         colorscale=colorscales["dark" if theme == "dark" else "light"],
-        colorbar={"title": colorbar_title},
+        # A title along the bar keeps its width the same for every scale
+        # mode, so switching modes does not resize the map.
+        colorbar={"title": {"text": colorbar_title, "side": "right"}},
         # Hover must fire over empty bins so the preview can say "no frames".
         hoverongaps=True,
         hovertemplate=_hovertemplate(
@@ -1050,7 +1061,7 @@ def make_density_interactive(
         states["colors"] = [_STATE_COLORS[i % len(_STATE_COLORS)] for i in range(n_labels)]
         group = states["groups"][state_group] if states["groups"] else {"bins": [], "states": [], "centres": []}
         traces.append(go.Heatmap(
-            z=_state_grid(group, n_bins_y, n_bins_x),
+            z=_state_grid(group, n_bins_y, n_bins_x).astype(np.float32),
             x=x_centres,
             y=y_centres,
             zmin=-0.5,
@@ -1094,6 +1105,9 @@ def make_density_interactive(
         },
         width=700,
         height=600,
+        # Room for the colour bar in every scale mode; Plotly still widens it
+        # if tick labels need more, rather than clipping them.
+        margin={"r": _COLORBAR_MARGIN_PX},
         paper_bgcolor=plotly_theme["paper_bgcolor"],
         plot_bgcolor=plotly_theme["plot_bgcolor"],
         font={"color": plotly_theme["font_color"]},
@@ -1183,11 +1197,12 @@ def make_density_interactive(
             "scale_mode_label": colorbar_title,
         },
         "scale": {
-            "grids": {
-                "counts": _grid_to_json(grids["counts"], integer=True),
-                "log_counts": _grid_to_json(grids["log_counts"]),
-                "free_energy": _grid_to_json(grids["free_energy"]),
-            },
+            "counts": (
+                encode_count_grid(H.T)
+                if interactive_cfg["compress_payloads"]
+                else _grid_to_json(grids["counts"], integer=True)
+            ),
+            "grid_decimals": _GRID_DECIMALS,
             "modes": _SCALE_MODES,
             "colorscales": colorscales,
             "energy_units": energy_unit_table(),

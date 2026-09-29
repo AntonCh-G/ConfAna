@@ -376,9 +376,10 @@ def build_bin_xyz_payloads(
     y_edges:
         Bin edge array for the y axis (shape ``(n_bins + 1,)``).
     alignment:
-        Optional alignment config dict.  When ``{"enabled": true}``, payloads
-        are aligned to the earliest available structure using the configured
-        reference / atom-selection settings.
+        Optional alignment config dict.  Alignment is on by default: payloads
+        are rigidly aligned to the reference structure using the configured
+        reference / atom-selection settings.  ``{"enabled": false}`` keeps
+        each structure in its raw trajectory orientation.
 
     Returns
     -------
@@ -398,15 +399,9 @@ def build_bin_xyz_payloads(
         return {}
 
     alignment_cfg = alignment or {}
-    align_enabled = bool(alignment_cfg.get("enabled", False))
+    align_enabled = bool(alignment_cfg.get("enabled", True))
     alignment_reference = str(alignment_cfg.get("reference", "earliest_frame"))
     atom_selection = str(alignment_cfg.get("atom_selection", "heavy"))
-    reference_xyz_text = None
-    if align_enabled:
-        reference_xyz_text = _resolve_alignment_reference_text(
-            df,
-            reference=alignment_reference,
-        )
 
     source_files = sub["source_file"].to_numpy(dtype=object)
     byte_offsets = pd.to_numeric(sub["byte_offset"], errors="coerce").to_numpy(dtype=np.int64)
@@ -422,15 +417,20 @@ def build_bin_xyz_payloads(
         try:
             text = read_xyz_frame_text(sf, int(bo), int(ac))
         except (ValueError, IOError, OSError):
-            pass
-        else:
-            if align_enabled and reference_xyz_text is not None:
-                text = align_xyz_to_reference(
-                    text,
-                    reference_xyz_text,
-                    atom_selection=atom_selection,
-                )
-            payloads[f"{xi}_{yi}"] = text
+            continue
+        payloads[f"{xi}_{yi}"] = text
+
+    # The reference is read only when there is something to align; if it
+    # cannot be read while bin structures could, that is a real error.
+    if align_enabled and payloads:
+        reference_xyz_text = _resolve_alignment_reference_text(
+            df,
+            reference=alignment_reference,
+        )
+        payloads = {
+            key: align_xyz_to_reference(text, reference_xyz_text, atom_selection=atom_selection)
+            for key, text in payloads.items()
+        }
 
     return payloads
 

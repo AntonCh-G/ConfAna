@@ -14,9 +14,12 @@
  *    pins in that bin; badge click shows the card. A new pin takes the lowest
  *    free number; at settings.max_pinned the oldest pin is removed. Pins
  *    carry all pairs' coordinates, and follow the pair links in the hash
- *  - axis-atom highlighting: the atoms defining the x and y coordinates
- *    (page data axis_atoms) are coloured in every 3D view, matching the
- *    axis titles, with a legend in the side panel
+ *  - axis-atom highlighting: atoms keep element colours; the atoms defining
+ *    the x and y coordinates (page data axis_atoms) get ball-and-stick and a
+ *    translucent halo matching the axis titles in every 3D view, with a
+ *    legend in the side panel and a toggle for atom-index labels
+ *  - shared camera: the preview and every card share one rotation and zoom,
+ *    so turning any 3D view turns them all and new pins open at that angle
  *  - colour scale: log counts | counts | free-energy-like, with an editable
  *    temperature and energy unit; grids and the unit table come from Python
  *    (page data scale), and ui_state is kept in step with the controls
@@ -87,9 +90,25 @@
     return Math.max(0, Math.min(9, Math.ceil(-Math.log10(step))));
   }
 
+  // Coordinates arrive atom-major, (atom, axis, structure), as a plane of
+  // low bytes then a plane of high bytes (mirrors _coordinate_planes).
+  // Rebuilt once into structure-major int16, (structure, atom, axis).
+  function caCoordinatesFromPlanes(buffer, count, atomCount) {
+    var bytes = new Uint8Array(buffer);
+    var total = count * atomCount * 3;
+    var coords = new Int16Array(total);
+    for (var j = 0; j < total; j++) {
+      var value = bytes[j] | (bytes[total + j] << 8);
+      var s = j % count;
+      var slot = (j - s) / count;  // atom * 3 + axis
+      coords[s * atomCount * 3 + slot] = value > 32767 ? value - 65536 : value;
+    }
+    return coords;
+  }
+
   function caDecodeStructures(block) {
-    if (!block || block.format !== 'confana-structures-v1') {
-      return Promise.reject(new Error('Not a confana-structures-v1 block.'));
+    if (!block || block.format !== 'confana-structures-v2') {
+      return Promise.reject(new Error('Not a confana-structures-v2 block.'));
     }
     return Promise.all([caGunzipJson(block.index), caGunzip(block.coords)]).then(function (parts) {
       var index = Object.create(null);
@@ -101,9 +120,32 @@
         elements: block.elements,
         atomCount: block.atom_count,
         step: block.step,
-        coords: new Int16Array(parts[1])
+        coords: caCoordinatesFromPlanes(parts[1], parts[0].keys.length, block.atom_count)
       };
     });
+  }
+
+  // Count grid (mirrors decode_count_grid): rows of counts, null for an
+  // unsampled bin. Not gzipped, so it is read at once, on load. A plain
+  // nested list (compress_payloads: false) is already in that form.
+  function caCountRows(block) {
+    if (Array.isArray(block)) return block;
+    if (!block || block.format !== 'confana-count-grid-v1') {
+      throw new Error('Not a confana-count-grid-v1 block.');
+    }
+    var bytes = caBytes(block.data);
+    var view = new DataView(bytes.buffer);
+    var width = block.dtype === 'u2' ? 2 : 4;
+    var rows = [];
+    for (var r = 0, at = 0; r < block.shape[0]; r++) {
+      var row = new Array(block.shape[1]);
+      for (var c = 0; c < block.shape[1]; c++, at += width) {
+        var v = width === 2 ? view.getUint16(at, true) : view.getUint32(at, true);
+        row[c] = v > 0 ? v : null;
+      }
+      rows.push(row);
+    }
+    return rows;
   }
 
   // One structure rebuilt from the shared arrays, in the same text layout
@@ -391,11 +433,58 @@
 
   function createViewerIn(el) {
     if (viewerFailed || typeof $3Dmol === 'undefined') return null;
+    var v;
     try {
-      return $3Dmol.createViewer(el, {backgroundColor: hexToInt(cssVar('--ca-viewer-bg'))});
+      v = $3Dmol.createViewer(el, {backgroundColor: hexToInt(cssVar('--ca-viewer-bg'))});
     } catch (err) {
       viewerFailed = true;
       return null;
+    }
+    v.setViewChangeCallback(function () { onViewChange(v); });
+    return v;
+  }
+
+  // One camera for every 3D view: turning or zooming the preview or any card
+  // turns and zooms them all, and a new structure opens in that camera, so
+  // pins compare with the preview and with each other. Only rotation and
+  // zoom are shared (getView entries 3-7); each viewer centres its own
+  // structure, which also holds when alignment is off and molecules drift.
+  // A viewer joins once showStructure has put the shared camera on it
+  // (_caSynced): until then its renders (creation, resize, reuse from the
+  // pool) carry a stale camera and are ignored.
+  var sharedView = null;
+  var syncingViews = false;
+
+  function cameraOf(v) {
+    return v.getView().slice(3, 8);
+  }
+
+  function sameCamera(a, b) {
+    for (var i = 0; i < a.length; i++) {
+      if (Math.abs(a[i] - b[i]) > 1e-9) return false;
+    }
+    return true;
+  }
+
+  function applySharedView(v) {
+    var view = v.getView();
+    for (var i = 0; i < sharedView.length; i++) view[3 + i] = sharedView[i];
+    v.setView(view);
+  }
+
+  // setView re-renders, which calls back here: syncingViews stops the echo.
+  function onViewChange(v) {
+    if (syncingViews || !v._caSynced) return;
+    var camera = cameraOf(v);
+    if (sharedView && sameCamera(camera, sharedView)) return;
+    sharedView = camera;
+    syncingViews = true;
+    try {
+      attachedViewers().forEach(function (other) {
+        if (other !== v && other._caSynced) applySharedView(other);
+      });
+    } finally {
+      syncingViews = false;
     }
   }
 
@@ -415,28 +504,78 @@
     return {index: indices};
   }
 
-  // Neutral sticks, with each axis's atoms as coloured sphere + stick.
-  // Without axis atoms, keep 3Dmol's element-coloured sticks.
+  // Colour means element everywhere; the axis is shown by a translucent
+  // halo in its colour around each axis atom, which is drawn as
+  // ball-and-stick with thicker bonds. Halos are shapes, not atom styles:
+  // 3Dmol shares sphere/stick opacity across a whole model.
+  var ELEMENT_SCHEME = 'Jmol';
+  var STICK_RADIUS = 0.12;
+  var AXIS_STICK_RADIUS = 0.2;
+  var AXIS_SPHERE_RADIUS = 0.32;
+  var HALO_RADIUS = 0.62;
+  var HALO_OPACITY = 0.6;
+  var showAtomIndices = false;
+
   function styleStructure(v) {
-    if (!highlightGroups) {
-      v.setStyle({}, {stick: {}});
-      return;
-    }
-    v.setStyle({}, {stick: {color: cssVar('--ca-atom-neutral')}});
-    highlightGroups.forEach(function (group) {
+    v.removeAllShapes();
+    v.removeAllLabels();
+    v.setStyle({}, {stick: {colorscheme: ELEMENT_SCHEME, radius: STICK_RADIUS}});
+    // Test hook: which halo each atom carries, since shapes hide their spec.
+    v._caHalos = [];
+    (highlightGroups || []).forEach(function (group) {
       var color = cssVar(group.colorVar);
-      v.setStyle(atomSelection(group.atoms), {
-        stick: {color: color},
-        sphere: {color: color, radius: 0.4}
+      var sel = atomSelection(group.atoms);
+      v.setStyle(sel, {
+        stick: {colorscheme: ELEMENT_SCHEME, radius: AXIS_STICK_RADIUS},
+        sphere: {colorscheme: ELEMENT_SCHEME, radius: AXIS_SPHERE_RADIUS}
+      });
+      v.selectedAtoms(sel).forEach(function (atom) {
+        v.addSphere({
+          center: {x: atom.x, y: atom.y, z: atom.z},
+          radius: HALO_RADIUS,
+          color: color,
+          opacity: HALO_OPACITY
+        });
+        v._caHalos.push({index: atom.index, color: color});
+      });
+    });
+    if (showAtomIndices) labelAtoms(v);
+  }
+
+  // Every atom, not only axis atoms: a wrong mapping is fixed by reading
+  // off the index of the atom that should have been used.
+  function labelAtoms(v) {
+    var fg = cssVar('--ca-fg');
+    var bg = cssVar('--ca-bg-elevated');
+    v.selectedAtoms({}).forEach(function (atom) {
+      v.addLabel(String(atom.index), {
+        position: {x: atom.x, y: atom.y, z: atom.z},
+        fontSize: 11,
+        fontColor: fg,
+        backgroundColor: bg,
+        backgroundOpacity: 0.7,
+        borderThickness: 0,
+        inFront: true,
+        alignment: 'center'
       });
     });
   }
 
+  // zoomTo centres the new structure; the first structure shown on the page
+  // also sets the starting zoom, and every later one takes the shared camera.
   function showStructure(v, xyzText) {
-    v.clear();
-    v.addModel(xyzText, 'xyz');
-    styleStructure(v);
-    v.zoomTo();
+    syncingViews = true;
+    try {
+      v.clear();
+      v.addModel(xyzText, 'xyz');
+      styleStructure(v);
+      v.zoomTo();
+      if (sharedView) applySharedView(v);
+      else sharedView = cameraOf(v);
+      v._caSynced = true;
+    } finally {
+      syncingViews = false;
+    }
     v.render();
   }
 
@@ -445,8 +584,10 @@
     var box = viewerPool.pop();
     if (box) {
       card.appendChild(box);
-      box._viewer3d.setBackgroundColor(hexToInt(cssVar('--ca-viewer-bg')));
+      // Resize before anything renders: off the page the canvas shrank to
+      // 0x0, and Firefox throws when 3Dmol renders into a 0x0 canvas.
       box._viewer3d.resize();
+      box._viewer3d.setBackgroundColor(hexToInt(cssVar('--ca-viewer-bg')));
       return box;
     }
     box = document.createElement('div');
@@ -460,7 +601,10 @@
   function releaseViewerBox(card) {
     var box = card.querySelector('.comparison-viewer');
     if (!box) return;
-    if (box._viewer3d) box._viewer3d.clear();
+    if (box._viewer3d) {
+      box._viewer3d._caSynced = false;
+      box._viewer3d.clear();
+    }
     box.parentNode.removeChild(box);
     if (box._viewer3d) viewerPool.push(box);
   }
@@ -653,10 +797,17 @@
       card.appendChild(note);
     }
 
+    // Frame metadata is secondary: collapsed until the reader asks for it.
+    var more = document.createElement('details');
+    more.className = 'ca-more';
+    var summary = document.createElement('summary');
+    summary.textContent = 'More info';
     var metaEl = document.createElement('div');
     metaEl.className = 'ca-card-meta';
     metaEl.innerHTML = buildMetadataHtml(pin.meta);
-    card.appendChild(metaEl);
+    more.appendChild(summary);
+    more.appendChild(metaEl);
+    card.appendChild(more);
 
     card.addEventListener('mouseenter', function () { setFocusedPin(pin.number); });
     card.addEventListener('mouseleave', function () { setFocusedPin(null); });
@@ -699,9 +850,18 @@
     pins.push(pin);
     updateTrayVisibility();
     // The card must be visible first: 3Dmol sizes against the visible box.
+    // A 3D failure must not leave the pin half-made (card without marker).
     if (pin.xyz) {
-      var box = takeViewerBox(pin.card);
-      if (box._viewer3d) showStructure(box._viewer3d, pin.xyz);
+      var box = null;
+      try {
+        box = takeViewerBox(pin.card);
+        if (box._viewer3d) showStructure(box._viewer3d, pin.xyz);
+      } catch (err) {
+        if (box) {
+          box._viewer3d = null;
+          showViewerError(box);
+        }
+      }
     }
     if (!quiet) focusCard(pin.card);
     return pin;
@@ -1175,6 +1335,21 @@
     note.className = 'ca-legend-note';
     note.textContent = '0-based atom indices in the xyz file';
     legendEl.appendChild(note);
+    var toggle = document.createElement('label');
+    toggle.className = 'ca-legend-toggle';
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.id = 'atom-index-toggle';
+    box.addEventListener('change', function () {
+      showAtomIndices = box.checked;
+      attachedViewers().forEach(function (v) {
+        styleStructure(v);
+        v.render();
+      });
+    });
+    toggle.appendChild(box);
+    toggle.appendChild(document.createTextNode(' Show atom indices in 3D'));
+    legendEl.appendChild(toggle);
     legendEl.hidden = false;
   }
 
@@ -1193,6 +1368,28 @@
   // Colour scale
   // -------------------------------------------------------------------
   var scale = pageData.scale || null;
+  if (scale) scale.grids = scaleGrids(caCountRows(scale.counts), scale.grid_decimals);
+
+  // The grid of every scale mode, from the counts (mirrors _scale_grids in
+  // plots_interactive.py and population_free_energy in density.py).
+  function scaleGrids(counts, decimals) {
+    var factor = Math.pow(10, decimals);
+    function rounded(v) { return Math.round(v * factor) / factor; }
+    var top = 0;
+    counts.forEach(function (row) {
+      row.forEach(function (c) { if (c !== null && c > top) top = c; });
+    });
+    function derive(fn) {
+      return counts.map(function (row) {
+        return row.map(function (c) { return c === null ? null : rounded(fn(c)); });
+      });
+    }
+    return {
+      counts: counts,
+      log_counts: derive(function (c) { return Math.log10(c + 1); }),
+      free_energy: derive(function (c) { return Math.log(top / c); })
+    };
+  }
   var scaleModes = (scale && scale.modes) || {};
   var energyUnits = Object.create(null);
   ((scale && scale.energy_units) || []).forEach(function (u) {
@@ -1313,6 +1510,17 @@
     });
     unitSelect.value = shownUnit();
     uiState.unit = unitSelect.value;
+    // Invisible copies of every subtitle reserve the width of the longest.
+    if (subtitleEl && subtitleEl.parentNode) {
+      Object.keys(scaleModes).forEach(function (m) {
+        if (!scaleModes[m].subtitle) return;
+        var sizer = document.createElement('span');
+        sizer.className = 'ca-subtitle ca-subtitle-sizer';
+        sizer.setAttribute('aria-hidden', 'true');
+        sizer.textContent = scaleModes[m].subtitle;
+        subtitleEl.parentNode.appendChild(sizer);
+      });
+    }
     if (validTemperature(uiState.temperature)) tempInput.value = String(uiState.temperature);
 
     for (var si = 0; si < segmentEls.length; si++) {

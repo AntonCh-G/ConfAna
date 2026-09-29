@@ -287,7 +287,15 @@ def test_build_bin_xyz_payloads_unreadable_skipped(tmp_path):
     assert result == {}
 
 
-def test_build_bin_xyz_payloads_alignment_uses_earliest_reference(tmp_path):
+@pytest.mark.parametrize(
+    "alignment",
+    [
+        {"enabled": True, "reference": "earliest_frame", "atom_selection": "heavy"},
+        None,  # alignment is on by default
+        {},
+    ],
+)
+def test_build_bin_xyz_payloads_alignment_uses_earliest_reference(tmp_path, alignment):
     """Aligned payloads are transformed into the earliest-frame reference orientation."""
     symbols = ["C", "C", "O", "H", "H"]
     reference_coords = np.asarray(
@@ -338,11 +346,17 @@ def test_build_bin_xyz_payloads_alignment_uses_earliest_reference(tmp_path):
         "ester_plane",
         x_edges,
         y_edges,
-        alignment={"enabled": True, "reference": "earliest_frame", "atom_selection": "heavy"},
+        alignment=alignment,
     )
 
     _, aligned_coords = _parse_xyz_symbols_coords(payloads["1_1"])
     assert _rmsd(aligned_coords, reference_coords) < 1e-6
+
+    raw = build_bin_xyz_payloads(
+        df, "carboxyl_plane", "ester_plane", x_edges, y_edges, alignment={"enabled": False}
+    )
+    _, raw_coords = _parse_xyz_symbols_coords(raw["1_1"])
+    assert _rmsd(raw_coords, target_coords) < 1e-6
 
 
 def test_build_bin_xyz_payloads_alignment_keeps_atom_order(tmp_path):

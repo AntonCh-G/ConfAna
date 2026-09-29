@@ -8,14 +8,21 @@ record per occupied density bin.  As plain JSON those two blocks are about
   once per page instead of once per structure, coordinates become 16-bit
   integers in fixed steps of ``coordinate_step`` ångström (default 0.001 Å,
   so at most 0.0005 Å of rounding), and the resulting array is gzipped and
-  base64-encoded.  This is a display copy only — exact coordinates stay in
-  the trajectory files the metadata points to.
+  base64-encoded.  Before gzip the integers are laid out so that gzip finds
+  more repeats (see :func:`_coordinate_planes`), which is lossless.  This is
+  a display copy only — exact coordinates stay in the trajectory files the
+  metadata points to.
 - **Metadata** (:func:`encode_columns`): records are stored column by column
   (one array per field) instead of one object per record, repeated strings
   are replaced by indices into a per-column lookup list, and the whole block
   is gzipped and base64-encoded.
+- **Count grid** (:func:`encode_count_grid`): the density histogram as raw
+  little-endian unsigned integers (2 bytes each when every count fits,
+  else 4), base64-encoded without gzip so the page can read it at once,
+  before its compressed blocks are unpacked.  The page derives the other
+  colour-scale grids (log counts, free energy) from it.
 
-Both encoders are deterministic: the same input always yields the same block,
+The encoders are deterministic: the same input always yields the same block,
 so ``render_density_page`` stays byte-stable.  The matching decoders exist so
 tests can round-trip the blocks in Python; the browser decodes the same
 formats in ``viewer.js`` with the built-in ``DecompressionStream('gzip')``.
@@ -24,6 +31,7 @@ Public API
 ----------
 - ``encode_structures`` / ``decode_structures``
 - ``encode_columns`` / ``decode_columns``
+- ``encode_count_grid`` / ``decode_count_grid``
 """
 
 from __future__ import annotations
@@ -37,8 +45,9 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 
 # Block format markers, also checked by the JavaScript decoder.
-STRUCTURES_FORMAT = "confana-structures-v1"
+STRUCTURES_FORMAT = "confana-structures-v2"
 COLUMNS_FORMAT = "confana-columns-v1"
+COUNT_GRID_FORMAT = "confana-count-grid-v1"
 
 # 16-bit signed integers hold ±32767 coordinate steps.
 _INT16_LIMIT = 32767
@@ -133,6 +142,28 @@ def _parse_xyz(text: str, key: str) -> tuple[int, str, tuple[str, ...], np.ndarr
     return atom_count, lines[1], tuple(symbols), np.asarray(coords, dtype=float)
 
 
+def _coordinate_planes(codes: np.ndarray) -> bytes:
+    """Lay out ``(structure, atom, axis)`` int16 *codes* for gzip.
+
+    Two lossless reorderings, which shrink the gzipped block by about 30 %:
+
+    1. atom-major order ``(atom, axis, structure)``: the same coordinate of
+       every structure sits side by side, and aligned structures have
+       similar values there;
+    2. byte planes: all low bytes first, then all high bytes, so the slowly
+       varying high bytes form long repeats.
+    """
+    atom_major = np.ascontiguousarray(codes.transpose(1, 2, 0)).astype("<i2")
+    return np.ascontiguousarray(atom_major.reshape(-1).view(np.uint8).reshape(-1, 2).T).tobytes()
+
+
+def _coordinates_from_planes(data: bytes, count: int, atom_count: int) -> np.ndarray:
+    """Inverse of :func:`_coordinate_planes`: ``(structure, atom, axis)`` int16 codes."""
+    planes = np.frombuffer(data, dtype=np.uint8).reshape(2, -1)
+    atom_major = np.ascontiguousarray(planes.T).view("<i2").reshape(atom_count, 3, count)
+    return atom_major.transpose(2, 0, 1)
+
+
 def encode_structures(payloads: Mapping[str, str], coordinate_step: float = 0.001) -> dict:
     """Return the compact block for the per-bin XYZ *payloads*.
 
@@ -151,7 +182,7 @@ def encode_structures(payloads: Mapping[str, str], coordinate_step: float = 0.00
         JSON-embeddable block: ``format``, ``step``, ``atom_count``,
         ``count``, ``elements`` (the shared element sequence), ``index``
         (gzipped keys and comment lines) and ``coords`` (gzipped 16-bit
-        little-endian coordinates).
+        little-endian coordinates in the layout of :func:`_coordinate_planes`).
 
     Raises
     ------
@@ -195,7 +226,7 @@ def encode_structures(payloads: Mapping[str, str], coordinate_step: float = 0.00
                 f"{step} Å, which does not fit a 16-bit integer. Increase "
                 "plots.interactive.coordinate_step (or set compress_payloads: false)."
             )
-        coord_bytes = codes.astype("<i2").tobytes()
+        coord_bytes = _coordinate_planes(codes.astype("<i2"))
     else:
         coord_bytes = b""
 
@@ -234,8 +265,10 @@ def decode_structures(block: Mapping) -> dict[str, str]:
     step = float(block["step"])
     decimals = coordinate_decimals(step)
 
-    codes = np.frombuffer(_unpack(block["coords"]), dtype="<i2")
-    coords = codes.reshape(len(keys), atom_count, 3) * step if keys else np.empty((0, 0, 3))
+    if keys:
+        coords = _coordinates_from_planes(_unpack(block["coords"]), len(keys), atom_count) * step
+    else:
+        coords = np.empty((0, 0, 3))
 
     out: dict[str, str] = {}
     for i, key in enumerate(keys):
@@ -358,3 +391,62 @@ def decode_columns(block: Mapping) -> dict[str, dict] | list[dict]:
     if keys is None:
         return rows
     return dict(zip(keys, rows))
+
+
+# ---------------------------------------------------------------------------
+# Count grid
+# ---------------------------------------------------------------------------
+
+
+def encode_count_grid(counts: np.ndarray) -> dict:
+    """Return the compact block for a 2D histogram of frame *counts*.
+
+    Parameters
+    ----------
+    counts:
+        2D array of non-negative whole numbers, rows = y bins.  0 means an
+        unsampled bin.
+
+    Returns
+    -------
+    dict
+        JSON-embeddable block: ``format``, ``shape`` (``[rows, columns]``),
+        ``dtype`` (``"u2"`` or ``"u4"``) and ``data`` (base64 of the
+        little-endian values in row order).
+
+    Raises
+    ------
+    ValueError
+        If *counts* is not 2D, holds negative or fractional values, or a
+        count does not fit 32 bits.
+    """
+    grid = np.asarray(counts, dtype=float)
+    if grid.ndim != 2:
+        raise ValueError(f"Count grid must be 2D, got shape {grid.shape}.")
+    if not np.all(np.isfinite(grid)) or np.any(grid < 0) or np.any(grid != np.rint(grid)):
+        raise ValueError("Count grid must hold non-negative whole numbers.")
+    top = float(grid.max()) if grid.size else 0.0
+    if top > np.iinfo(np.uint32).max:
+        raise ValueError(f"Count {top:.0f} does not fit a 32-bit unsigned integer.")
+    dtype = "u2" if top <= np.iinfo(np.uint16).max else "u4"
+    return {
+        "format": COUNT_GRID_FORMAT,
+        "shape": [int(grid.shape[0]), int(grid.shape[1])],
+        "dtype": dtype,
+        "data": base64.b64encode(grid.astype("<" + dtype).tobytes()).decode("ascii"),
+    }
+
+
+def decode_count_grid(block: Mapping) -> np.ndarray:
+    """Rebuild the integer count array of an :func:`encode_count_grid` block.
+
+    Raises
+    ------
+    ValueError
+        If *block* is not a count-grid block of a known format version.
+    """
+    if block.get("format") != COUNT_GRID_FORMAT:
+        raise ValueError(f"Not a {COUNT_GRID_FORMAT} block: format={block.get('format')!r}.")
+    rows, cols = (int(n) for n in block["shape"])
+    values = np.frombuffer(base64.b64decode(block["data"]), dtype="<" + block["dtype"])
+    return values.reshape(rows, cols).astype(np.int64)
