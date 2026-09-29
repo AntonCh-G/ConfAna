@@ -1,16 +1,22 @@
 """Benchmark the load/build coordinate-table stage.
 
 Run from the project root:
-    python scripts/benchmark_coordinates.py
-    python scripts/benchmark_coordinates.py --config configs/default.yaml
+    python scripts/benchmark_coordinates.py                      # MD17 example config
+    python scripts/benchmark_coordinates.py --config FILE.yaml
     python scripts/benchmark_coordinates.py --no-cold --micro
     python scripts/benchmark_coordinates.py --help
 
 Phases
 ------
-A  Cold build  — forces cache rebuild; times all substeps via StageTimer.
-B  Warm load   — reloads from NPZ cache; measures I/O-only throughput.
-C  Micro       — times individual geometry primitives on a synthetic fixture.
+A  Cold build  — rebuilds the coordinate table from xyz; with --n-jobs 1
+                 (the default) it also times every substep via StageTimer.
+B  Warm load   — loads the same table again from its NPZ cache.
+C  Micro       — times the configured DoF on synthetic coordinates, one
+                 frame at a time and as one batch.
+
+The benchmark writes its own cache (``<run_dir>/.bench/coordinates.npz`` or
+``--cache``), so the run's real caches are never touched. Frame indices
+(``.frameindex.npz``) are reused if present, as in a normal run.
 """
 
 from __future__ import annotations
@@ -58,53 +64,61 @@ def _fmt_fps(fps: float) -> str:
     return f"{fps:.0f} frames/s"
 
 
+def _build_kwargs(cfg: dict, cache_path: Path, n_jobs: int) -> dict:
+    """Keyword arguments for load_or_build_coordinate_table_cache from a run config."""
+    from confana.coordinate_config import resolve_dof_definitions
+
+    data_cfg = cfg.get("data", {})
+    if "path_pattern" not in data_cfg:
+        raise SystemExit("ERROR: data.path_pattern is not set in the config.")
+    return {
+        "path_pattern": str(data_cfg["path_pattern"]),
+        "dof_defs": resolve_dof_definitions(cfg),
+        "cache_path": cache_path,
+        "trajectory_id_pattern": data_cfg.get("trajectory_id_pattern"),
+        "bead_id_pattern": data_cfg.get("bead_id_pattern"),
+        "index_cache_dir": cfg.get("cache", {}).get("index_cache_dir"),
+        "n_jobs": n_jobs,
+        "bond_break_cfg": cfg.get("bond_break"),
+        "frame_range_cfg": cfg.get("frame_range"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Phase A: cold build
 # ---------------------------------------------------------------------------
 
+# What each StageTimer label in io_coordinates measures.
+_STAGE_NOTES = {
+    "index_loading": "frame-index cache check, or the one-pass file scan",
+    "array_alloc": "pre-allocating the output arrays",
+    "frame_iter": "reading and parsing xyz frames",
+    "batch_geometry": "vectorised DoF geometry per chunk of frames",
+    "array_write": "copying chunk results into the output arrays",
+    "df_assembly": "building the pandas DataFrame",
+}
 
-def _phase_a(cfg: dict, config_path: str) -> int:
+
+def _phase_a(kwargs: dict) -> int:
     """Force-rebuild the coordinate table and collect fine-grained timing."""
-    import yaml
     from confana.bench import StageTimer
     from confana.io_coordinates import load_or_build_coordinate_table_cache
-    from confana.io_xyz import load_or_build_xyz_index
 
     _section("Phase A — cold build (force_rebuild=True)")
 
-    data_cfg = cfg.get("data", {})
-    cache_cfg = cfg.get("cache", {})
-    cache_path = cache_cfg.get("coordinate_table_path")
-    if not cache_path:
-        print("  ERROR: cache.coordinate_table_path not set in config.")
-        return 0
-
-    n_jobs = int(cache_cfg.get("n_jobs", 1))
+    n_jobs = kwargs["n_jobs"]
     # Stage-level timer only works in serial mode; suppress it in parallel runs.
     timer = StageTimer() if n_jobs == 1 else None
+    mode = "(serial — stage timer active)" if n_jobs == 1 else "(parallel — no stage breakdown)"
+    print(f"  n_jobs       : {n_jobs}  {mode}")
 
-    print(f"  n_jobs       : {n_jobs}  {'(serial — stage timer active)' if n_jobs == 1 else '(parallel — no stage breakdown)'}")
-
-    t_total_start = time.perf_counter()
-    df, cache_hit = load_or_build_coordinate_table_cache(
-        path_pattern=str(data_cfg["path_pattern"]),
-        mapping=cfg["atom_mapping"],
-        conventions=cfg["conventions"],
-        cache_path=cache_path,
-        trajectory_id_pattern=data_cfg.get("trajectory_id_pattern"),
-        bead_id_pattern=data_cfg.get("bead_id_pattern"),
-        index_cache_dir=cache_cfg.get("index_cache_dir"),
-        force_rebuild=True,
-        n_jobs=n_jobs,
-        _timer=timer,
-    )
-    t_total = time.perf_counter() - t_total_start
+    t0 = time.perf_counter()
+    df, _ = load_or_build_coordinate_table_cache(**kwargs, force_rebuild=True, _timer=timer)
+    t_total = time.perf_counter() - t0
 
     n = len(df)
     fps = _div(n, t_total)
-
     print(f"  total_frames : {n:>12,}")
-    print(f"  cache_hit    : {cache_hit}")
     print(f"  total_time   : {t_total:>10.2f} s")
     print(f"  throughput   : {fps:>10,.0f} frames/s  ({_fmt_fps(fps)})")
 
@@ -112,71 +126,26 @@ def _phase_a(cfg: dict, config_path: str) -> int:
         print()
         print("  Stage breakdown:")
         print(timer.report(total_frames=n))
-
-        # Per-file index timing
-        per_file_labels = [k for k in timer._totals if k.startswith("index:")]
-        if per_file_labels:
-            print()
-            print(f"  {'File':<40}  {'index_s':>8}")
-            print(f"  {'-'*40}  {'-'*8}")
-            for lbl in sorted(per_file_labels):
-                fname = lbl[len("index:"):]
-                print(f"  {fname:<40}  {timer.total(lbl):>8.4f}")
-
-        # Bottleneck analysis
-        _print_bottleneck_analysis(timer, n)
-
+        _print_bottlenecks(timer, n)
     return n
 
 
-def _print_bottleneck_analysis(timer, total_frames: int) -> None:
-    from confana.bench import StageTimer
-
+def _print_bottlenecks(timer, total_frames: int) -> None:
+    """Rank the stages by time, with what each one measures."""
     grand = timer.grand_total() or 1.0
     ranked = sorted(
-        [(lbl, t) for lbl, t in timer._totals.items() if not lbl.startswith("index:")],
+        ((lbl, t) for lbl, t in timer._totals.items() if not lbl.startswith("index:")),
         key=lambda kv: -kv[1],
     )
     if not ranked:
         return
-
     print()
-    print("  TOP BOTTLENECKS:")
-    explanations = {
-        "frame_iter": "xyz line parsing in Python (I/O + coordinate parsing)",
-        "compute_plane": "best_fit_plane SVD called 2x per frame (ring + func. group)",
-        "compute_dihedral": "atan2 / cross-product geometry, 2x per frame",
-        "array_write": "scalar numpy indexing overhead",
-        "df_assembly": "pd.DataFrame construction + dtype coercion",
-        "array_alloc": "np.empty pre-allocation",
-        "index_loading": "frame-index cache check + JSON load (or scan)",
-    }
+    print("  Stages by time:")
     for rank, (lbl, t) in enumerate(ranked, 1):
         pct = t / grand * 100.0
         us_per_frame = _div(t, total_frames) * 1e6
-        note = explanations.get(lbl, "")
-        print(f"  {rank}. {lbl:<20}  {pct:5.1f}%  {us_per_frame:7.1f} µs/frame  — {note}")
-
-    top_label = ranked[0][0] if ranked else ""
-    print()
-    print("  RECOMMENDED NEXT STEPS (based on measurement):")
-    if top_label == "compute_plane":
-        print("  > carboxyl and ester planes have 3 atoms each — replace SVD")
-        print("    (best_fit_plane) with a direct cross-product for those planes.")
-        print("    Only the 6-atom ring plane needs SVD. Expected speedup: 40-60%.")
-    elif top_label == "frame_iter":
-        print("  > xyz parsing is the bottleneck. Consider:")
-        print("    - Parsing coordinate lines with numpy.fromstring instead of split()")
-        print("    - Writing a C extension or using ASE's faster reader")
-        print("    - Pre-computing and caching coordinates as binary (NPZ/HDF5)")
-    elif top_label == "compute_dihedral":
-        print("  > Vectorise dihedral computation across all frames using numpy")
-        print("    batch operations instead of calling once per frame.")
-    elif top_label == "df_assembly":
-        print("  > DataFrame assembly is slow. Consider building the DataFrame")
-        print("    after all frames are processed rather than using pd.Categorical.")
-    else:
-        print(f"  > Profile {top_label!r} further with --micro or cProfile.")
+        note = _STAGE_NOTES.get(lbl, "")
+        print(f"  {rank}. {lbl:<16}  {pct:5.1f}%  {us_per_frame:7.2f} µs/frame  {note}")
 
 
 # ---------------------------------------------------------------------------
@@ -184,26 +153,26 @@ def _print_bottleneck_analysis(timer, total_frames: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _phase_b(cfg: dict) -> None:
+def _phase_b(kwargs: dict) -> None:
     """Load the coordinate table from the NPZ cache and measure throughput."""
+    from confana.io_coordinates import load_or_build_coordinate_table_cache
+
     _section("Phase B — warm load (cache hit)")
 
-    cache_cfg = cfg.get("cache", {})
-    cache_path = cache_cfg.get("coordinate_table_path")
-    if not cache_path or not Path(cache_path).exists():
+    cache_path = Path(kwargs["cache_path"])
+    if not cache_path.exists():
         print("  SKIP: cache not found — run Phase A first.")
         return
 
-    from confana.io_coordinates import load_coordinate_table
-
     t0 = time.perf_counter()
-    df = load_coordinate_table(cache_path)
+    df, cache_hit = load_or_build_coordinate_table_cache(**kwargs)
     t_total = time.perf_counter() - t0
+    if not cache_hit:
+        print("  NOTE: the cache was stale and has been rebuilt; this is not a warm load.")
 
     n = len(df)
     fps = _div(n, t_total)
-    size_mb = Path(cache_path).stat().st_size / 1e6
-
+    size_mb = cache_path.stat().st_size / 1e6
     print(f"  total_frames : {n:>12,}")
     print(f"  total_time   : {t_total:>10.3f} s")
     print(f"  throughput   : {fps:>10,.0f} frames/s  ({_fmt_fps(fps)})")
@@ -216,24 +185,24 @@ def _phase_b(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _phase_c(cfg: dict) -> None:
-    """Time individual geometry primitives on a synthetic FrameRecord fixture."""
-    _section("Phase C — geometry micro-benchmark")
-
+def _phase_c(dof_defs: list, n_scalar: int = 1_000, n_batch: int = 10_000) -> None:
+    """Time the configured geometry DoF on synthetic coordinates."""
     import numpy as np
-    from confana.geometry import best_fit_plane, dihedral_angle, plane_plane_angle
-    from confana.coordinates import compute_angles_plane, compute_angles_dihedral
+
+    from confana.coordinates import batch_extract_geometry_dof, extract_geometry_dof
     from confana.models import FrameRecord
 
-    mapping = cfg.get("atom_mapping", {})
-    conventions = cfg.get("conventions", {})
+    _section("Phase C — geometry micro-benchmark")
 
+    geometry = [d for d in dof_defs if d.type in ("dihedral", "distance", "angle")]
+    if not geometry:
+        print("  SKIP: no dihedral, distance or angle DoF in the config.")
+        return
+
+    n_atoms = max(max(d.atoms) for d in geometry) + 1
     rng = np.random.default_rng(42)
-    # Typical molecule has ~15 atoms; use 15 atoms
-    n_atoms = 15
     coords = rng.standard_normal((n_atoms, 3)).astype(np.float32)
-
-    # Build a minimal FrameRecord
+    batch_coords = rng.standard_normal((n_batch, n_atoms, 3)).astype(np.float32)
     frame = FrameRecord(
         source_file="bench",
         frame_number=0,
@@ -242,100 +211,32 @@ def _phase_c(cfg: dict) -> None:
         comment_line="",
         elements=["C"] * n_atoms,
         coords=coords,
-        trajectory_id="bench",
-        bead_id=None,
-        local_frame_index=0,
-        global_frame_index=0,
-        energy=None,
-        step_number=None,
-        bead_comment=None,
     )
 
-    ring_ids = mapping.get("ring_plane", [0, 1, 2, 3, 5, 6])
-    carboxyl_ids = mapping.get("carboxyl_plane", [9, 10, 7])
-    ester_ids = mapping.get("ester_plane", [12, 11, 8])
-    carboxyl_dih_ids = mapping.get("carboxyl_dihedral", [6, 5, 10, 7])
-    ester_dih_ids = mapping.get("ester_dihedral", [5, 6, 12, 11])
-
-    # Clamp indices to available atoms
-    def clamp(ids: list[int]) -> list[int]:
-        return [i % n_atoms for i in ids]
-
-    ring_ids = clamp(ring_ids)
-    carboxyl_ids = clamp(carboxyl_ids)
-    ester_ids = clamp(ester_ids)
-    carboxyl_dih_ids = clamp(carboxyl_dih_ids)
-    ester_dih_ids = clamp(ester_dih_ids)
-
-    from confana.coordinates import (
-        batch_compute_angles_dihedral,
-        batch_compute_angles_plane,
-    )
-    from confana.geometry import batch_best_fit_plane, batch_dihedral_angle, batch_plane_plane_angle
-
-    N_SCALAR = 1_000   # scalar loop iterations
-    N_BATCH  = 10_000  # frames per batch call
-
-    def _bench_scalar(fn, *args) -> float:
+    def per_frame_us(defs: list) -> float:
         t0 = time.perf_counter()
-        for _ in range(N_SCALAR):
-            fn(*args)
-        return (time.perf_counter() - t0) / N_SCALAR * 1e6
+        for _ in range(n_scalar):
+            extract_geometry_dof(frame, defs)
+        return (time.perf_counter() - t0) / n_scalar * 1e6
 
-    # Batch fixture: N_BATCH frames of n_atoms atoms
-    batch_coords = rng.standard_normal((N_BATCH, n_atoms, 3)).astype(np.float32)
-
-    def _bench_batch(fn, *args) -> float:
-        """Return µs/frame for a batch call over N_BATCH frames."""
+    def batch_us(defs: list) -> float:
         t0 = time.perf_counter()
-        fn(*args)
-        return (time.perf_counter() - t0) / N_BATCH * 1e6
+        batch_extract_geometry_dof(batch_coords, defs)
+        return (time.perf_counter() - t0) / n_batch * 1e6
 
-    # ---- Scalar primitives ----
-    scalar_results: list[tuple[str, float]] = []
-    scalar_results.append(("scalar: best_fit_plane (ring 6)", _bench_scalar(best_fit_plane, coords, ring_ids)))
-    scalar_results.append(("scalar: best_fit_plane (carboxyl 3)", _bench_scalar(best_fit_plane, coords, carboxyl_ids)))
-    scalar_results.append(("scalar: plane_plane_angle", _bench_scalar(plane_plane_angle, coords, ring_ids, carboxyl_ids)))
-    scalar_results.append(("scalar: dihedral_angle", _bench_scalar(dihedral_angle, coords, carboxyl_dih_ids)))
-    scalar_results.append(("scalar: compute_angles_plane", _bench_scalar(compute_angles_plane, frame, mapping, conventions)))
-    scalar_results.append(("scalar: compute_angles_dihedral", _bench_scalar(compute_angles_dihedral, frame, mapping, conventions)))
+    rows = [(f"{d.name} ({d.type})", per_frame_us([d]), batch_us([d])) for d in geometry]
+    rows.append((f"all {len(geometry)} DoF", per_frame_us(geometry), batch_us(geometry)))
 
-    # ---- Batch primitives ----
-    batch_results: list[tuple[str, float]] = []
-    batch_results.append(("batch:  best_fit_plane (ring 6)", _bench_batch(batch_best_fit_plane, batch_coords, ring_ids)))
-    batch_results.append(("batch:  best_fit_plane (carboxyl 3)", _bench_batch(batch_best_fit_plane, batch_coords, carboxyl_ids)))
-    batch_results.append(("batch:  plane_plane_angle", _bench_batch(batch_plane_plane_angle, batch_coords, ring_ids, carboxyl_ids)))
-    batch_results.append(("batch:  dihedral_angle", _bench_batch(batch_dihedral_angle, batch_coords, carboxyl_dih_ids)))
-    batch_results.append(("batch:  compute_angles_plane", _bench_batch(batch_compute_angles_plane, batch_coords, mapping, conventions)))
-    batch_results.append(("batch:  compute_angles_dihedral", _bench_batch(batch_compute_angles_dihedral, batch_coords, mapping, conventions)))
-
-    all_results = scalar_results + batch_results
-    lw = max(len(r[0]) for r in all_results) + 2
-
-    print(f"  Scalar: {N_SCALAR:,} iterations × 1 frame.  Batch: 1 call × {N_BATCH:,} frames.")
-    print(f"  All times in µs/frame.")
+    lw = max(len(r[0]) for r in rows) + 2
+    print(f"  Synthetic {n_atoms}-atom frames. One frame: {n_scalar:,} calls. "
+          f"Batch: 1 call × {n_batch:,} frames.")
     print()
-    print(f"  {'function':<{lw}}  {'µs/frame':>10}")
-    print(f"  {'-'*lw}  {'-'*10}")
-    for name, us in sorted(all_results, key=lambda r: -r[1]):
-        print(f"  {name:<{lw}}  {us:>10.3f}")
-
-    # Speedup summary
-    print()
-    print("  Speedup (scalar ÷ batch):")
-    pairs = [
-        ("compute_angles_plane", "scalar: compute_angles_plane", "batch:  compute_angles_plane"),
-        ("compute_angles_dihedral", "scalar: compute_angles_dihedral", "batch:  compute_angles_dihedral"),
-        ("best_fit_plane (ring 6)", "scalar: best_fit_plane (ring 6)", "batch:  best_fit_plane (ring 6)"),
-        ("dihedral_angle", "scalar: dihedral_angle", "batch:  dihedral_angle"),
-    ]
-    scalar_map = dict(scalar_results)
-    batch_map  = dict(batch_results)
-    for label, sk, bk in pairs:
-        sv = scalar_map.get(sk, 0.0)
-        bv = batch_map.get(bk, 0.0)
-        speedup = _div(sv, bv) if bv > 0 else float("inf")
-        print(f"  {label:<35}  {speedup:>6.1f}×")
+    print(f"  {'DoF':<{lw}}  {'one frame':>11}  {'batch':>11}  {'speedup':>8}")
+    print(f"  {'':<{lw}}  {'µs/frame':>11}  {'µs/frame':>11}")
+    print(f"  {'-' * lw}  {'-' * 11}  {'-' * 11}  {'-' * 8}")
+    for name, one, batch in rows:
+        speedup = f"{_div(one, batch):.0f}×" if batch > 0 else "∞"
+        print(f"  {name:<{lw}}  {one:>11.3f}  {batch:>11.3f}  {speedup:>8}")
 
 
 # ---------------------------------------------------------------------------
@@ -343,53 +244,61 @@ def _phase_c(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """Command-line entry point."""
     parser = argparse.ArgumentParser(
         description="Benchmark the ConfAna coordinate-table build stage."
     )
     parser.add_argument(
         "--config",
-        default="configs/default.yaml",
-        help="Path to config YAML (default: configs/default.yaml)",
+        default="examples/md17_aspirin.yaml",
+        help="Path to config YAML (default: %(default)s)",
     )
     parser.add_argument(
-        "--no-cold",
-        action="store_true",
-        help="Skip Phase A (cold build).",
+        "--cache",
+        type=Path,
+        default=None,
+        help="NPZ path for the benchmark's own cache (default: <run_dir>/.bench/coordinates.npz)",
     )
     parser.add_argument(
-        "--no-warm",
-        action="store_true",
-        help="Skip Phase B (warm load).",
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Worker processes for the build; 1 (default) gives the stage breakdown.",
     )
-    parser.add_argument(
-        "--micro",
-        action="store_true",
-        help="Run Phase C (geometry micro-benchmark).",
-    )
-    args = parser.parse_args()
+    parser.add_argument("--no-cold", action="store_true", help="Skip Phase A (cold build).")
+    parser.add_argument("--no-warm", action="store_true", help="Skip Phase B (warm load).")
+    parser.add_argument("--micro", action="store_true", help="Run Phase C (geometry micro-benchmark).")
+    args = parser.parse_args(argv)
 
     import yaml
+
+    from confana.coordinate_config import resolve_dof_definitions
 
     cfg_path = Path(args.config)
     if not cfg_path.exists():
         print(f"ERROR: config file not found: {cfg_path}", file=sys.stderr)
         sys.exit(1)
-
     cfg = yaml.safe_load(cfg_path.read_text())
+
+    cache_path = args.cache
+    if cache_path is None:
+        cache_path = Path(cfg.get("run_dir") or "outputs") / ".bench" / "coordinates.npz"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     _header("ConfAna coordinate-table benchmark")
     print(f"  config: {cfg_path}")
+    print(f"  cache : {cache_path}")
 
-    total_frames = 0
-    if not args.no_cold:
-        total_frames = _phase_a(cfg, str(cfg_path))
-
-    if not args.no_warm:
-        _phase_b(cfg)
+    if not args.no_cold or not args.no_warm:
+        kwargs = _build_kwargs(cfg, cache_path, args.n_jobs)
+        if not args.no_cold:
+            _phase_a(kwargs)
+        if not args.no_warm:
+            _phase_b(kwargs)
 
     if args.micro:
-        _phase_c(cfg)
+        _phase_c(resolve_dof_definitions(cfg))
 
     print()
     print(_sep("=", 64))
