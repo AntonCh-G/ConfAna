@@ -217,14 +217,27 @@ def browser(playwright):
 
 @pytest.fixture(scope="module")
 def firefox(playwright):
-    """Firefox, for behaviour where it differs from Chromium (3Dmol canvas reuse)."""
+    """Firefox, for behaviour where it differs from Chromium (3Dmol canvas reuse).
+
+    Firefox blocks WebGL on software-only drivers, which is all a machine
+    without a GPU (such as a CI runner) has; force it on, as Chromium's
+    SwiftShader flags do, and skip if there is still no WebGL.
+    """
     try:
-        browser = playwright.firefox.launch(headless=True)
+        browser = playwright.firefox.launch(
+            headless=True, firefox_user_prefs={"webgl.force-enabled": True}
+        )
     except sync_api.Error as exc:
         pytest.skip(
             "Playwright's Firefox is not installed "
             f"({str(exc).splitlines()[0]}); run `python -m playwright install firefox`."
         )
+    probe = browser.new_page()
+    has_webgl = probe.evaluate("!!document.createElement('canvas').getContext('webgl')")
+    probe.close()
+    if not has_webgl:
+        browser.close()
+        pytest.skip("Firefox has no WebGL here, so 3Dmol cannot draw.")
     yield browser
     browser.close()
 
