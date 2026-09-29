@@ -605,6 +605,25 @@ def test_theme_toggle_recolours_plot(open_page, pages):
     assert state["paper"] == "#1c2024"
 
 
+def test_zero_lines_match_the_grid_in_both_themes(open_page, pages):
+    """Plotly's default zero line is white: invisible in light, a bright cross in dark."""
+    page = open_page(pages["bin"])
+    zero_lines = (
+        "(() => { const fl = document.getElementsByClassName('plotly-graph-div')[0]._fullLayout;"
+        " return [fl.xaxis.zerolinecolor, fl.yaxis.zerolinecolor]; })()"
+    )
+    grid = page.css_var("--ca-plot-grid")
+    assert page.page.evaluate(zero_lines) == [grid, grid]
+
+    page.page.evaluate("document.documentElement.dataset.theme = 'light'")
+    for theme in ("dark", "light"):
+        page.page.click("#theme-toggle")
+        page.wait_until(f"document.documentElement.dataset.theme === '{theme}'")
+        grid = page.css_var("--ca-plot-grid")
+        page.wait_until(f"{zero_lines}[0] === '{grid}'")
+        assert page.page.evaluate(zero_lines) == [grid, grid], theme
+
+
 @pytest.mark.parametrize("variant", ["bin", "highlight", "fe", "states_on"])
 def test_idle_page_does_not_redraw(open_page, pages, variant):
     page = open_page(pages[variant])

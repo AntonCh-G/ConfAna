@@ -349,6 +349,9 @@
     if ((layout.font || {}).color !== fg) update['font.color'] = fg;
     if ((layout.xaxis || {}).gridcolor !== grid) update['xaxis.gridcolor'] = grid;
     if ((layout.yaxis || {}).gridcolor !== grid) update['yaxis.gridcolor'] = grid;
+    // Plotly's default zero line is white; draw it as one more grid line.
+    if ((layout.xaxis || {}).zerolinecolor !== grid) update['xaxis.zerolinecolor'] = grid;
+    if ((layout.yaxis || {}).zerolinecolor !== grid) update['yaxis.zerolinecolor'] = grid;
     var labelBg = cssVar('--ca-state-label-bg');
     // Pin badges are recoloured by drawPinMarkers instead.
     (layout.annotations || []).forEach(function (a, i) {
