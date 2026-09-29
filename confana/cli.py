@@ -469,3 +469,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
 
     click.echo(f"\nAll outputs saved to: {out}")
     click.echo("run-all done.")
+
+
+if __name__ == "__main__":
+    cli()
