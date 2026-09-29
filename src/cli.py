@@ -73,10 +73,18 @@ def _pair_siblings(pairs) -> list[dict]:
     """Sibling page entries for the interactive header navigation.
 
     Every pair of the run is listed, so each page can link to the others and
-    mark itself as the current one.
+    mark itself as the current one. ``columns`` makes every page embed each
+    pair's coordinates, so pins can follow the reader between pages.
     """
     return [
-        {"name": name, "title": pair.title or name, "filename": _interactive_filename(name)}
+        {
+            "name": name,
+            "title": pair.title or name,
+            "filename": _interactive_filename(name),
+            # The columns the map is drawn from (shifted ones when a
+            # coordinate transform is configured).
+            "columns": list(pair.feature_columns),
+        }
         for name, pair in pairs
     ]
 

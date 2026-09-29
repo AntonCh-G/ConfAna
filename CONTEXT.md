@@ -57,6 +57,21 @@ Each bead is a separate ordered xyz trajectory sharing the same trajectory_id. T
 **Frame index**
 A byte-offset index built by scanning each xyz file once. Enables O(1) random access to any frame by seeking to `byte_offset`. Cached to disk as `.frameindex.npz` alongside the source file (or in `cache.index_cache_dir`).
 
+## Interactive Map Concepts
+
+**Representative frame**
+The one frame shown for a density bin: the sampled frame closest to the bin centre. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames.
+
+**Pin**
+One frame the researcher has selected on the interactive map to keep on screen. A pin is a frame, not a bin: clicking a bin pins that bin's representative frame. The same pin appears on every coordinate-pair page of the run, placed at that frame's own coordinates in each pair.
+_Avoid_: pinned bin, card (the card is only how a pin is displayed)
+
+**Pin number**
+The small integer that names a pin on both the map and its card. A new pin takes the lowest number not in use, so a number freed by closing a pin is reused.
+
+**Pin marker**
+The on-map sign of a pin: a numbered badge with a short arrow pointing at the frame's exact coordinates, plus the outline of the bin the frame falls in.
+
 ## Config Schema
 
 **`run_dir`** (required, top-level)

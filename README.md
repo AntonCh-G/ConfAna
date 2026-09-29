@@ -265,9 +265,23 @@ Without it these tests are skipped. To skip them explicitly: `pytest -m "not bro
   element sequence, or if a coordinate needs more than 16 bits at the chosen step.
 - The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
-  (`interactive.hover_preview`, default `true`). Clicking pins it as a card; Esc or
-  double-click clears pins. At most `interactive.max_pinned` cards (default 15) are kept:
-  pinning more removes the oldest.
+  (`interactive.hover_preview`, default `true`). Clicking a bin pins its representative
+  frame (the frame closest to the bin centre); Esc or double-click clears pins. At most
+  `interactive.max_pinned` pins (default 15) are kept: pinning more removes the oldest.
+  - Each pin has a number, shown both on its card and on the map. On the map, a numbered
+    badge with a short arrow points at the frame's exact coordinates, and the bin it falls
+    in is outlined (visible once you zoom in). In per-frame mode
+    (`embed_xyz_payload: false`) the marker is a ring around the frame's point.
+  - A new pin takes the lowest free number, so closing pin 2 frees number 2. Cards are
+    listed by number.
+  - Hovering a card makes its badge bold and fades the others. Hovering a pinned bin on
+    the map outlines its card. Clicking a badge scrolls to its card.
+  - A pin is a frame, not a bin. When you switch pair pages with the header links, the
+    pins come along, carried in the link (`#pins=…`). Each page places a pin at that
+    frame's own coordinates in its pair, keeping its number and structure. A pin with no
+    value for a page's pair keeps its card there, marked "Not on this map". A page opened
+    on its own, not through a header link, starts with no pins. See
+    `docs/adr/0002-pins-are-frames-carried-in-link-hash.md`.
 - Every 3D view colours the atoms that define each axis: x-axis atoms in orange, y-axis
   atoms in blue, atoms shared by both in pink, all other atoms as grey sticks. The axis
   titles use the same colours, and a legend in the side panel lists the atom indices

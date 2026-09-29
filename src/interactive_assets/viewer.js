@@ -6,9 +6,14 @@
  *  - light/dark theme toggle, synced into Plotly and the 3Dmol viewers
  *  - live hover preview: one shared 3Dmol viewer plus a read-out and a
  *    metadata table for the bin under the cursor
- *  - pinned cards: clicking a bin/frame opens a persistent card with its own
- *    3Dmol viewer (multi-card design; no singleton #viewer3d), capped at
- *    settings.max_pinned with the oldest card evicted
+ *  - pins (docs/adr/0002): clicking a bin pins its representative frame (in
+ *    per-frame mode, the nearest frame). Each pin has a number, a card with
+ *    its own 3Dmol viewer (no singleton #viewer3d) and a map marker: badge
+ *    + arrow to the frame's spot, bin outline + dot (ring in per-frame mode).
+ *    Card hover fades the other markers; map hover lights the cards of the
+ *    pins in that bin; badge click shows the card. A new pin takes the lowest
+ *    free number; at settings.max_pinned the oldest pin is removed. Pins
+ *    carry all pairs' coordinates, and follow the pair links in the hash
  *  - axis-atom highlighting: the atoms defining the x and y coordinates
  *    (page data axis_atoms) are coloured in every 3D view, matching the
  *    axis titles, with a legend in the side panel
@@ -303,7 +308,9 @@
     if ((layout.xaxis || {}).gridcolor !== grid) update['xaxis.gridcolor'] = grid;
     if ((layout.yaxis || {}).gridcolor !== grid) update['yaxis.gridcolor'] = grid;
     var labelBg = cssVar('--ca-state-label-bg');
+    // Pin badges are recoloured by drawPinMarkers instead.
     (layout.annotations || []).forEach(function (a, i) {
+      if (String(a.name || '').indexOf('pin-') === 0) return;
       if (a.bgcolor !== labelBg) update['annotations[' + i + '].bgcolor'] = labelBg;
     });
     ['x', 'y'].forEach(function (axis) {
@@ -351,6 +358,7 @@
       if (Object.keys(layoutUpdate).length || Object.keys(traceUpdate).length) {
         Plotly.update(gd, traceUpdate, layoutUpdate, [0]);
       }
+      if (pins.length) drawPinMarkers();
     }
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
     attachedViewers().forEach(function (v) {
@@ -505,18 +513,27 @@
   }
 
   // -------------------------------------------------------------------
-  // Pinned cards (multi-card design; one 3Dmol viewer per card)
+  // Pins (docs/adr/0002). A pin is one frame: a numbered card in the panel
+  // and a numbered marker on the map at the frame's own coordinates. Pins
+  // travel to the run's other pair pages in the link hash.
   // -------------------------------------------------------------------
   var trayEl = document.getElementById('comparison-tray');
   var cardsEl = document.getElementById('comparison-cards');
   var clearBtn = document.getElementById('comparison-clear');
   var noticeEl = document.getElementById('panel-notice');
-  var openCards = Object.create(null);
   var noticeTimer = null;
+  var grid = pageData.grid || binGeo || null;
+  // Creation order, oldest first: the pin limit removes pins[0].
+  var pins = [];
+  var focusedPinNumber = null;
+  var hoveredBinKey = null;
+  var PIN_OFFSET = 22;  // px from the frame's spot to its badge
+  var PIN_EDGE = 0.85;  // past this share of the visible range the badge flips inward
+  var PIN_FADED = 0.3;
 
   function updateTrayVisibility() {
-    if (!trayEl || !cardsEl) return;
-    trayEl.style.display = cardsEl.children.length ? 'block' : 'none';
+    if (!trayEl) return;
+    trayEl.style.display = pins.length ? 'block' : 'none';
   }
 
   function showNotice(message) {
@@ -529,21 +546,6 @@
     }, 3000);
   }
 
-  function getCardKey(best, xi, yi) {
-    if (binGeo && xi !== null && yi !== null) return 'bin:' + xi + '_' + yi;
-    if (best.frame_id != null) return 'frame:' + best.frame_id;
-    var filePart = best.source_file != null ? best.source_file : 'unknown';
-    var offsetPart = best.byte_offset != null ? best.byte_offset : 'na';
-    var framePart = best.frame_number != null ? best.frame_number : 'na';
-    return 'frame:' + filePart + '|' + offsetPart + '|' + framePart;
-  }
-
-  function getCardTitle(best, xi, yi) {
-    if (binGeo && xi !== null && yi !== null) return 'Bin ' + xi + '_' + yi;
-    if (best.frame_number != null) return 'Frame ' + best.frame_number;
-    return 'Structure';
-  }
-
   function focusCard(card) {
     if (!card) return;
     card.scrollIntoView({behavior: 'smooth', block: 'nearest', inline: 'nearest'});
@@ -553,87 +555,445 @@
     }, 800);
   }
 
-  // The DOM is the single record of pinned cards and their order; openCards
-  // only maps keys to elements for de-duplication.
-  function removeCardElement(card) {
-    releaseViewerBox(card);
-    if (card.parentNode) card.parentNode.removeChild(card);
-    delete openCards[card.dataset.cardKey];
-    updateTrayVisibility();
+  // The same on every page of a run: they all embed the same frame_id.
+  function frameKey(record) {
+    if (record.frame_id != null) return 'frame:' + record.frame_id;
+    return 'frame:' + [record.source_file, record.bead_id, record.frame_number, record.byte_offset]
+      .map(function (v) { return v == null ? 'na' : v; })
+      .join('|');
   }
 
-  function removeCard(cardKey) {
-    var card = openCards[cardKey];
-    if (card) removeCardElement(card);
+  function findPin(key) {
+    for (var i = 0; i < pins.length; i++) if (pins[i].key === key) return pins[i];
+    return null;
   }
 
-  function clearAllCards() {
-    while (cardsEl && cardsEl.firstElementChild) {
-      removeCardElement(cardsEl.firstElementChild);
-    }
-    updateTrayVisibility();
+  function pinByNumber(number) {
+    for (var i = 0; i < pins.length; i++) if (pins[i].number === number) return pins[i];
+    return null;
   }
 
-  function createCard(cardKey, cardTitle, metadataHtml, xyzText) {
-    // Cards are prepended, so the last child is the oldest.
-    var evicted = false;
-    while (cardsEl.children.length >= maxPinned) {
-      removeCardElement(cardsEl.lastElementChild);
-      evicted = true;
-    }
-    if (evicted) {
-      showNotice('Pin limit (' + maxPinned + ') reached — removed the oldest pinned structure.');
-    }
+  function lowestFreeNumber() {
+    var n = 1;
+    while (pinByNumber(n)) n++;
+    return n;
+  }
 
+  function byNumber(a, b) {
+    return a.number - b.number;
+  }
+
+  // Bins follow numpy.histogram2d: the upper edge belongs to the last bin.
+  function binIndex(value, min, width, count) {
+    var i = Math.floor((value - min) / width);
+    if (i === count && Math.abs(value - (min + count * width)) <= 1e-9 * width) i = count - 1;
+    return i >= 0 && i < count ? i : null;
+  }
+
+  // Where the frame sits on this map, or a note saying why it is not shown.
+  function pinPlace(meta) {
+    var x = meta[axisSpec.x_col];
+    var y = meta[axisSpec.y_col];
+    var missing = [];
+    if (!Number.isFinite(x)) missing.push(axisSpec.x_col);
+    if (!Number.isFinite(y)) missing.push(axisSpec.y_col);
+    if (missing.length) return {note: 'Not on this map (no ' + missing.join(' or ') + ' value)'};
+    if (!grid) return {x: x, y: y, bin: null};
+    var xi = binIndex(x, grid.x_min, grid.bin_w, grid.n_bins_x);
+    var yi = binIndex(y, grid.y_min, grid.bin_h, grid.n_bins_y);
+    if (xi === null || yi === null) return {note: 'Not on this map (outside its range)'};
+    return {x: x, y: y, bin: {xi: xi, yi: yi, key: xi + '_' + yi}};
+  }
+
+  function pinTitle(pin) {
+    var meta = pin.meta;
+    var frame = meta.frame_id != null ? 'frame ' + meta.frame_id
+      : meta.frame_number != null ? 'frame ' + meta.frame_number
+      : 'structure';
+    var title = pin.place.bin ? 'Bin ' + pin.place.bin.key + ' · ' + frame : frame;
+    return title.charAt(0).toUpperCase() + title.slice(1);
+  }
+
+  function buildPinCard(pin) {
     var card = document.createElement('div');
     card.className = 'ca-card';
-    card.dataset.cardKey = cardKey;
+    card.dataset.cardKey = pin.key;
+    card.dataset.pin = String(pin.number);
+    card.dataset.bin = pin.place.bin ? pin.place.bin.key : '';
 
     var header = document.createElement('div');
     header.className = 'ca-card-header';
 
     var titleEl = document.createElement('div');
-    titleEl.innerHTML = '<b>' + cardTitle + '</b>';
+    titleEl.className = 'ca-card-title';
+    var badge = document.createElement('span');
+    badge.className = 'ca-pin-badge';
+    badge.textContent = String(pin.number);
+    var name = document.createElement('b');
+    name.textContent = pinTitle(pin);
+    titleEl.appendChild(badge);
+    titleEl.appendChild(name);
 
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'ca-btn';
     closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', function () {
-      removeCard(cardKey);
+      removePin(pin.key);
     });
 
     header.appendChild(titleEl);
     header.appendChild(closeBtn);
     card.appendChild(header);
 
-    var metaEl = document.createElement('div');
-    metaEl.className = 'ca-card-meta';
-    metaEl.innerHTML = metadataHtml;
-    card.appendChild(metaEl);
-
-    cardsEl.prepend(card);
-    openCards[cardKey] = card;
-    updateTrayVisibility();
-
-    if (xyzText) {
-      var box = takeViewerBox(card);
-      if (box._viewer3d) showStructure(box._viewer3d, xyzText);
+    if (pin.place.note) {
+      var note = document.createElement('div');
+      note.className = 'ca-pin-note';
+      note.textContent = pin.place.note;
+      card.appendChild(note);
     }
 
-    focusCard(card);
+    var metaEl = document.createElement('div');
+    metaEl.className = 'ca-card-meta';
+    metaEl.innerHTML = buildMetadataHtml(pin.meta);
+    card.appendChild(metaEl);
+
+    card.addEventListener('mouseenter', function () { setFocusedPin(pin.number); });
+    card.addEventListener('mouseleave', function () { setFocusedPin(null); });
     return card;
+  }
+
+  // Cards are kept in pin-number order.
+  function insertCard(card, number) {
+    var next = null;
+    for (var c = cardsEl.firstElementChild; c; c = c.nextElementSibling) {
+      if (Number(c.dataset.pin) > number) {
+        next = c;
+        break;
+      }
+    }
+    cardsEl.insertBefore(card, next);
+  }
+
+  // Adds a pin without redrawing; the caller runs pinsChanged() once after.
+  // `number` keeps a pin's number when it arrives from another page; `quiet`
+  // skips the scroll-and-flash.
+  function addPin(meta, xyzText, number, quiet) {
+    var evicted = false;
+    while (pins.length >= maxPinned) {
+      dropPin(pins[0]);
+      evicted = true;
+    }
+    if (evicted) {
+      showNotice('Pin limit (' + maxPinned + ') reached — removed the oldest pinned structure.');
+    }
+    var pin = {
+      key: frameKey(meta),
+      number: number && !pinByNumber(number) ? number : lowestFreeNumber(),
+      meta: meta,
+      xyz: xyzText || null,
+      place: pinPlace(meta)
+    };
+    pin.card = buildPinCard(pin);
+    insertCard(pin.card, pin.number);
+    pins.push(pin);
+    updateTrayVisibility();
+    // The card must be visible first: 3Dmol sizes against the visible box.
+    if (pin.xyz) {
+      var box = takeViewerBox(pin.card);
+      if (box._viewer3d) showStructure(box._viewer3d, pin.xyz);
+    }
+    if (!quiet) focusCard(pin.card);
+    return pin;
+  }
+
+  function dropPin(pin) {
+    releaseViewerBox(pin.card);
+    if (pin.card.parentNode) pin.card.parentNode.removeChild(pin.card);
+    pins.splice(pins.indexOf(pin), 1);
+    if (focusedPinNumber === pin.number) focusedPinNumber = null;
+  }
+
+  function pinsChanged() {
+    updateTrayVisibility();
+    // The mouse may rest on the bin just pinned: no new hover event comes.
+    linkCardsToBin(hoveredBinKey);
+    drawPinMarkers();
+    syncPinHash();
+  }
+
+  function removePin(key) {
+    var pin = findPin(key);
+    if (!pin) return;
+    dropPin(pin);
+    pinsChanged();
+  }
+
+  function clearAllPins() {
+    if (!pins.length) return;
+    while (pins.length) dropPin(pins[0]);
+    pinsChanged();
   }
 
   if (clearBtn) {
     clearBtn.addEventListener('click', function () {
-      clearAllCards();
+      clearAllPins();
     });
   }
 
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') clearAllCards();
+    if (event.key === 'Escape') clearAllPins();
   });
+
+  // --- Pin markers on the map ---
+  function pinOpacity(pin) {
+    return focusedPinNumber === null || focusedPinNumber === pin.number ? 1 : PIN_FADED;
+  }
+
+  function pinFontSize(pin) {
+    return focusedPinNumber === pin.number ? 13 : 11;
+  }
+
+  // Badges sit up-right of their spot and flip inward near the right or top
+  // edge of the visible range, so they stay inside the plot.
+  function badgeOffset(place) {
+    var fl = gd._fullLayout || {};
+    function share(value, axis) {
+      var range = fl[axis] && fl[axis].range;
+      return range ? (value - range[0]) / (range[1] - range[0]) : 0.5;
+    }
+    return {
+      ax: share(place.x, 'xaxis') > PIN_EDGE ? -PIN_OFFSET : PIN_OFFSET,
+      ay: share(place.y, 'yaxis') > PIN_EDGE ? PIN_OFFSET : -PIN_OFFSET
+    };
+  }
+
+  function pixelCircle(x, y, radius, style) {
+    var shape = {
+      type: 'circle', xref: 'x', yref: 'y', xsizemode: 'pixel', ysizemode: 'pixel',
+      xanchor: x, yanchor: y, x0: -radius, x1: radius, y0: -radius, y1: radius, layer: 'above'
+    };
+    for (var k in style) shape[k] = style[k];
+    return shape;
+  }
+
+  // Per placed pin: a halo annotation (a wide arrow in the halo colour, so
+  // the thin arrow shows on any map colour), the badge annotation, and the
+  // shapes: bin outline + dot at the frame's spot, or in per-frame mode a
+  // ring. They follow the state labels, whose count sets the first index.
+  function pinLayout(firstAnnotation) {
+    var mark = cssVar('--ca-pin');
+    var text = cssVar('--ca-pin-contrast');
+    var halo = cssVar('--ca-pin-halo');
+    var clear = 'rgba(0,0,0,0)';
+    var annotations = [];
+    var shapes = [];
+    pins.slice().sort(byNumber).forEach(function (pin) {
+      var place = pin.place;
+      pin.annotationIndices = [];
+      pin.shapeIndices = [];
+      pin.offset = null;
+      if (place.x === undefined) return;
+      var offset = badgeOffset(place);
+      var opacity = pinOpacity(pin);
+      pin.offset = offset;
+      function annotation(extra) {
+        var a = {
+          x: place.x, y: place.y, xref: 'x', yref: 'y', ax: offset.ax, ay: offset.ay,
+          text: '<b>' + pin.number + '</b>', showarrow: true, arrowhead: 0, standoff: 4,
+          borderpad: 2, borderwidth: 1, opacity: opacity
+        };
+        for (var k in extra) a[k] = extra[k];
+        pin.annotationIndices.push(firstAnnotation + annotations.length);
+        annotations.push(a);
+      }
+      annotation({
+        name: 'pin-halo-' + pin.number,
+        font: {size: pinFontSize(pin), color: clear},
+        bgcolor: clear, bordercolor: clear, arrowcolor: halo, arrowwidth: 4
+      });
+      annotation({
+        name: 'pin-' + pin.number,
+        font: {size: pinFontSize(pin), color: text},
+        bgcolor: mark, bordercolor: halo, arrowcolor: mark, arrowwidth: 1.5,
+        captureevents: true, hovertext: 'Pin ' + pin.number + ' — click to show its card'
+      });
+      function shape(s) {
+        s.opacity = opacity;
+        s.name = 'pin-' + pin.number;
+        pin.shapeIndices.push(shapes.length);
+        shapes.push(s);
+      }
+      if (binGeo && place.bin) {
+        var x0 = grid.x_min + place.bin.xi * grid.bin_w;
+        var y0 = grid.y_min + place.bin.yi * grid.bin_h;
+        shape({
+          type: 'rect', xref: 'x', yref: 'y', x0: x0, x1: x0 + grid.bin_w, y0: y0, y1: y0 + grid.bin_h,
+          line: {color: mark, width: 1.5}, fillcolor: clear, layer: 'above'
+        });
+        shape(pixelCircle(place.x, place.y, 3, {fillcolor: mark, line: {color: halo, width: 1}}));
+      } else {
+        shape(pixelCircle(place.x, place.y, 6, {fillcolor: clear, line: {color: halo, width: 4}}));
+        shape(pixelCircle(place.x, place.y, 6, {fillcolor: clear, line: {color: mark, width: 2}}));
+      }
+    });
+    return {annotations: annotations, shapes: shapes};
+  }
+
+  // The map's annotations: state labels first, then the pin badges.
+  function mapAnnotations() {
+    var stateLabels = states ? stateAnnotations(currentStateGroup(), !!uiState.state_overlay_visible) : [];
+    return {stateLabels: stateLabels, pins: pinLayout(stateLabels.length)};
+  }
+
+  function drawPinMarkers() {
+    if (!gd || !window.Plotly) return;
+    var layout = mapAnnotations();
+    Plotly.relayout(gd, {
+      annotations: layout.stateLabels.concat(layout.pins.annotations),
+      shapes: layout.pins.shapes
+    });
+  }
+
+  // Card hover: bold badge for this pin, the others faded. Only the changed
+  // items are edited, which is much cheaper than redrawing every marker.
+  function setFocusedPin(number) {
+    if (number === focusedPinNumber || !gd || !window.Plotly) return;
+    focusedPinNumber = number;
+    var update = {};
+    pins.forEach(function (pin) {
+      var opacity = pinOpacity(pin);
+      (pin.annotationIndices || []).forEach(function (i) {
+        update['annotations[' + i + '].opacity'] = opacity;
+        update['annotations[' + i + '].font.size'] = pinFontSize(pin);
+      });
+      (pin.shapeIndices || []).forEach(function (i) {
+        update['shapes[' + i + '].opacity'] = opacity;
+      });
+    });
+    if (Object.keys(update).length) Plotly.relayout(gd, update);
+  }
+
+  // Map hover: the cards of the pins in the hovered bin glow.
+  function linkCardsToBin(binKey) {
+    hoveredBinKey = binKey;
+    pins.forEach(function (pin) {
+      var linked = !!binKey && !!pin.place.bin && pin.place.bin.key === binKey;
+      pin.card.classList.toggle('ca-card-linked', linked);
+    });
+  }
+
+  // After a zoom or pan, redraw only if some badge has to flip.
+  function onPinRelayout(event) {
+    if (!event || !pins.length) return;
+    var ranged = Object.keys(event).some(function (k) { return /^[xy]axis\.(range|autorange)/.test(k); });
+    if (!ranged) return;
+    var flipped = pins.some(function (pin) {
+      if (!pin.offset) return false;
+      var offset = badgeOffset(pin.place);
+      return offset.ax !== pin.offset.ax || offset.ay !== pin.offset.ay;
+    });
+    if (flipped) drawPinMarkers();
+  }
+
+  // --- Pins in the link hash ---
+  // '#pins=' + base64url(gzip(JSON)); the JSON lists the pins oldest first,
+  // each with its number, metadata record (all pairs' coordinates) and
+  // structure text. Kept in step with the pins, so reload keeps them.
+  var PIN_HASH = '#pins=';
+  var hashJob = null;
+  var navLinks = [];
+
+  function base64UrlFromBytes(bytes) {
+    var binary = '';
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function base64FromUrl(text) {
+    var b64 = text.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    return b64;
+  }
+
+  function gzipBase64Url(text) {
+    if (typeof CompressionStream === 'undefined') {
+      return Promise.reject(new Error('This browser has no CompressionStream(gzip).'));
+    }
+    var stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(stream).arrayBuffer().then(function (buffer) {
+      return base64UrlFromBytes(new Uint8Array(buffer));
+    });
+  }
+
+  function pinHashPayload() {
+    return JSON.stringify({
+      v: 1,
+      pins: pins.map(function (pin) { return {n: pin.number, m: pin.meta, x: pin.xyz}; })
+    });
+  }
+
+  function setLocationHash(hash) {
+    var url = window.location.href.split('#')[0] + hash;
+    try {
+      window.history.replaceState(window.history.state, '', url);
+    } catch (err) {
+      window.location.replace(url);
+    }
+  }
+
+  function syncPinHash() {
+    var job = pins.length
+      ? gzipBase64Url(pinHashPayload()).then(function (s) { return PIN_HASH + s; })
+      : Promise.resolve('');
+    hashJob = job;
+    job.then(
+      function (hash) {
+        if (hashJob !== job) return;
+        setLocationHash(hash);
+        navLinks.forEach(function (link) {
+          link.href = encodeURIComponent(link.dataset.filename) + hash;
+        });
+        hashJob = null;
+      },
+      function () {
+        if (hashJob !== job) return;
+        hashJob = null;
+        showNotice('Could not store the pins in the link; they will not follow you to other pages.');
+      }
+    );
+  }
+
+  // A pair link clicked while the hash is still being written waits for it.
+  function followWhenHashReady(event) {
+    if (!hashJob) return;
+    event.preventDefault();
+    var link = event.currentTarget;
+    (function wait() {
+      var job = hashJob;
+      if (!job) {
+        window.location.href = link.href;
+        return;
+      }
+      job.then(wait, wait);
+    })();
+  }
+
+  function restorePinsFromHash() {
+    var hash = window.location.hash;
+    if (hash.indexOf(PIN_HASH) !== 0) return;
+    caGunzipJson(base64FromUrl(hash.slice(PIN_HASH.length))).then(function (data) {
+      if (!data || data.v !== 1 || !Array.isArray(data.pins)) throw new Error('Unknown pin format.');
+      data.pins.forEach(function (p) {
+        if (p && p.m && !findPin(frameKey(p.m))) addPin(p.m, p.x, p.n, true);
+      });
+      pinsChanged();
+    }).catch(function () {
+      showNotice('Could not read the pins carried in the link.');
+    });
+  }
 
   // -------------------------------------------------------------------
   // Hover preview
@@ -725,6 +1085,7 @@
     var pt = pendingPoint;
     if (!pt) return;
     var bin = binFromPoint(pt);
+    linkCardsToBin(bin ? bin.key : null);
     var key = bin ? bin.key : pt.x + ',' + pt.y;
     if (key === currentHoverKey) return;
     currentHoverKey = key;
@@ -1040,7 +1401,11 @@
       currentStateGrid = stateGrid(group);
       traceUpdate.z = [currentStateGrid];
     }
-    Plotly.update(gd, traceUpdate, {annotations: stateAnnotations(group, visible)}, [1]);
+    // The pin badges follow the state labels, so both are rebuilt together.
+    var annotations = mapAnnotations();
+    Plotly.update(gd, traceUpdate, {
+      annotations: annotations.stateLabels.concat(annotations.pins.annotations)
+    }, [1]);
     syncStateControls();
     if (lastReadout) updateReadout(lastReadout.pt, lastReadout.bin);
   }
@@ -1088,6 +1453,10 @@
       link.href = encodeURIComponent(entry.filename);
       link.textContent = entry.title || entry.name;
       link.dataset.pair = entry.name;
+      // syncPinHash appends the pins to every link, so they follow the reader.
+      link.dataset.filename = entry.filename;
+      link.addEventListener('click', followWhenHashReady);
+      navLinks.push(link);
       if (entry.current) link.setAttribute('aria-current', 'page');
       navEl.appendChild(link);
     });
@@ -1141,7 +1510,7 @@
       // any two clicks within 300 ms, even on different bins, and would wipe
       // the pins when clicking quickly.
       if (data.event && data.event.detail >= 2) {
-        clearAllCards();
+        clearAllPins();
         return;
       }
       var pt = data.points[0];
@@ -1149,8 +1518,6 @@
       var cy = pt.y;
 
       var bin = binGeo ? binFromPoint(pt) : null;
-      var xi = bin ? bin.xi : null;
-      var yi = bin ? bin.yi : null;
 
       if (payloadsPending || payloadError) {
         showNotice(payloadError ? failedMessage() : loadingMessage());
@@ -1180,21 +1547,32 @@
 
       if (!best) return;
 
-      var cardKey = getCardKey(best, xi, yi);
-      if (openCards[cardKey]) {
-        focusCard(openCards[cardKey]);
+      // A pin is a frame: the same frame clicked again only shows its card.
+      var existing = findPin(frameKey(best));
+      if (existing) {
+        focusCard(existing.card);
         return;
       }
+      addPin(best, bin ? binXyzFor(bin.key) : null);
+      pinsChanged();
+    });
 
-      var xyzText = bin ? binXyzFor(bin.key) : null;
-
-      createCard(cardKey, getCardTitle(best, xi, yi), buildMetadataHtml(best), xyzText);
+    // A pin badge is clicked: show that pin's card.
+    gd.on('plotly_clickannotation', function (data) {
+      var match = /^pin-(\d+)$/.exec((data && data.annotation && data.annotation.name) || '');
+      var pin = match ? pinByNumber(Number(match[1])) : null;
+      if (pin) focusCard(pin.card);
     });
 
     if (hoverPreview) gd.on('plotly_hover', onHover);
-    gd.on('plotly_relayout', updateDegreeTicks);
+    gd.on('plotly_unhover', function () { linkCardsToBin(null); });
+    gd.on('plotly_relayout', function (event) {
+      updateDegreeTicks();
+      onPinRelayout(event);
+    });
   }
 
   applyTheme();
   updateTrayVisibility();
+  restorePinsFromHash();
 })();

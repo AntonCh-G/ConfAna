@@ -19,6 +19,11 @@
   --ca-axis-both: #cc79a7;
   --ca-atom-neutral: #9aa0a6;
   --ca-state-label-bg: rgba(255, 255, 255, 0.75);
+  /* Pin markers and card badges: near-black (light) or near-white (dark)
+     with a halo, so they read on any density colour scale. */
+  --ca-pin: #111418;
+  --ca-pin-contrast: #ffffff;
+  --ca-pin-halo: #ffffff;
 
   --ca-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --ca-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -42,6 +47,9 @@
     --ca-axis-both: #e3a3c8;
     --ca-atom-neutral: #8a929b;
     --ca-state-label-bg: rgba(28, 32, 36, 0.75);
+    --ca-pin: #f4f6f8;
+    --ca-pin-contrast: #111418;
+    --ca-pin-halo: #0b0d0f;
   }
 }
 
@@ -62,6 +70,9 @@
   --ca-axis-both: #e3a3c8;
   --ca-atom-neutral: #8a929b;
   --ca-state-label-bg: rgba(28, 32, 36, 0.75);
+  --ca-pin: #f4f6f8;
+  --ca-pin-contrast: #111418;
+  --ca-pin-halo: #0b0d0f;
 }
 
 :root[data-theme="light"] {
@@ -81,6 +92,9 @@
   --ca-axis-both: #cc79a7;
   --ca-atom-neutral: #9aa0a6;
   --ca-state-label-bg: rgba(255, 255, 255, 0.75);
+  --ca-pin: #111418;
+  --ca-pin-contrast: #ffffff;
+  --ca-pin-halo: #ffffff;
 }
 
 * { box-sizing: border-box; }
@@ -433,6 +447,11 @@ html, body {
   transition: box-shadow 0.15s ease;
 }
 
+/* A pin in the hovered map bin. */
+.ca-card-linked {
+  box-shadow: 0 0 0 2px var(--ca-pin), 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
 .ca-card-focus {
   box-shadow: 0 0 0 2px var(--ca-accent), 0 8px 18px rgba(0, 0, 0, 0.16);
 }
@@ -458,4 +477,33 @@ html, body {
   border: 1px solid var(--ca-border);
   border-radius: 4px;
   background: var(--ca-viewer-bg);
+}
+
+.ca-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Same look as the map badge: the number names the pin in both places. */
+.ca-pin-badge {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: var(--ca-pin);
+  color: var(--ca-pin-contrast);
+  box-shadow: 0 0 0 1px var(--ca-pin-halo);
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.ca-pin-note {
+  margin-bottom: 8px;
+  color: var(--ca-fg-muted);
+  font-family: var(--ca-font-sans);
+  font-style: italic;
 }

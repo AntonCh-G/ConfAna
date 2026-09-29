@@ -384,9 +384,9 @@ def test_make_density_interactive_uses_multi_card_js_and_no_singleton_viewer(tmp
     )
 
     content = outpath.read_text(encoding="utf-8")
-    assert "createCard(" in content
+    assert "addPin(" in content
     assert "comparison-viewer" in content
-    assert "clearAllCards" in content
+    assert "clearAllPins" in content
     assert 'id="viewer3d"' not in content
     assert 'id="info-panel"' not in content
 
@@ -1218,6 +1218,101 @@ def test_make_density_interactive_navigation_absent_without_siblings(tmp_path, s
 )
 def test_make_density_interactive_invalid_siblings_raise(tmp_path, siblings, message):
     with pytest.raises(ValueError, match=message):
+        make_density_interactive(
+            _make_angle_df(), _plane_pair(), tmp_path / "density_plane.html", siblings=siblings
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pins carried between pair pages (docs/adr/0002)
+# ---------------------------------------------------------------------------
+
+
+def _pin_siblings() -> list[dict]:
+    return [
+        {"name": "plane", "filename": "density_plane.html",
+         "columns": ["carboxyl_plane", "ester_plane"]},
+        {"name": "dihedral", "filename": "density_dihedral.html",
+         "columns": ["carboxyl_dihedral", "ester_dihedral"]},
+        # A pair whose column this table lacks: its pins show "not on this map".
+        {"name": "absent", "filename": "density_absent.html", "columns": ["no_such_dof", "ester_plane"]},
+    ]
+
+
+@pytest.mark.parametrize("embed", [True, False])
+def test_every_frame_record_carries_frame_id_and_all_pairs_columns(tmp_path, embed):
+    from src.payload_codec import decode_columns
+
+    df, _ = _bin_df()
+    df["carboxyl_dihedral"] = np.linspace(-170.0, 170.0, len(df))
+    df["ester_dihedral"] = np.linspace(170.0, -170.0, len(df))
+    data = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "density_plane.html",
+            config=_bin_cfg(embed_xyz_payload=embed), siblings=_pin_siblings(),
+        ).read_text(encoding="utf-8")
+    )
+    block = "bin_frame_metadata_encoded" if embed else "frame_metadata_encoded"
+    decoded = decode_columns(data[block])
+    records = list(decoded.values()) if isinstance(decoded, dict) else decoded
+    assert records
+    by_id = df.set_index("frame_id")
+    for record in records:
+        row = by_id.loc[record["frame_id"]]
+        for column in ("carboxyl_plane", "ester_plane", "carboxyl_dihedral", "ester_dihedral"):
+            assert record[column] == pytest.approx(row[column])
+        assert "no_such_dof" not in record
+
+
+@pytest.mark.parametrize("embed", [True, False])
+def test_frame_records_carry_the_shifted_columns_the_maps_use(tmp_path, embed):
+    # coordinate_transforms map a pair onto '<dof>_shifted'; pins must carry that
+    # column, or they are "not on this map" even on the page they came from.
+    from src.cli import _pair_siblings
+    from src.payload_codec import decode_columns
+
+    df, _ = _bin_df()
+    df["ester_plane_shifted"] = (df["ester_plane"] + 90.0) % 180.0
+    pair = CoordinatePair(**{**_plane_pair().__dict__, "feature_y_col": "ester_plane_shifted"})
+    siblings = _pair_siblings([("plane", pair)])
+    assert siblings[0]["columns"] == ["carboxyl_plane", "ester_plane_shifted"]
+
+    data = _page_data(
+        make_density_interactive(
+            df, pair, tmp_path / "density_plane.html",
+            config=_bin_cfg(embed_xyz_payload=embed, compress_payloads=False),
+            siblings=siblings,
+        ).read_text(encoding="utf-8")
+    )
+    records = (
+        list(data["bin_frame_metadata"].values()) if embed else data["frame_metadata"]
+    )
+    by_id = df.set_index("frame_id")
+    for record in records:
+        assert record["ester_plane_shifted"] == pytest.approx(
+            by_id.loc[record["frame_id"], "ester_plane_shifted"]
+        )
+
+
+@pytest.mark.parametrize("embed", [True, False])
+def test_grid_is_embedded_in_both_page_modes(tmp_path, embed):
+    df, _ = _bin_df()
+    data = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "grid.html", config=_bin_cfg(embed_xyz_payload=embed)
+        ).read_text(encoding="utf-8")
+    )
+    assert data["grid"] == {
+        "x_min": 0.0, "y_min": 0.0, "bin_w": 15.0, "bin_h": 15.0, "n_bins_x": 12, "n_bins_y": 12,
+    }
+    if embed:
+        assert data["bin_geometry"] == data["grid"]
+
+
+@pytest.mark.parametrize("columns", ["carboxyl_plane", [1, 2], {"x": "carboxyl_plane"}])
+def test_invalid_sibling_columns_raise(tmp_path, columns):
+    siblings = [{"name": "plane", "filename": "density_plane.html", "columns": columns}]
+    with pytest.raises(ValueError, match="'columns' to be a list of column names"):
         make_density_interactive(
             _make_angle_df(), _plane_pair(), tmp_path / "density_plane.html", siblings=siblings
         )

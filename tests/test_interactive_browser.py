@@ -151,6 +151,35 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         df, _pair(), root / "nav_single.html", config=no_payload,
         siblings=[{"name": "dihedral", "title": "Dihedral density", "filename": "nav_single.html"}],
     )
+    # Three linked pages with structures, for pins carried between pairs:
+    # the second swaps the axes; the third has a DoF missing for every frame
+    # with carboxyl_dihedral < -75 (the well at -120).
+    carry_df = df.copy()
+    carry_df["partial_dof"] = np.where(
+        carry_df["carboxyl_dihedral"] < -75.0, np.nan, 1.0 + (np.arange(len(df)) % 8)
+    )
+    carry_pairs = {
+        "carry_a": _pair(),
+        "carry_b": CoordinatePair(**{
+            **_pair().__dict__, "name": "swapped", "title": "Swapped density",
+            "x_col": "ester_dihedral", "y_col": "carboxyl_dihedral",
+        }),
+        "carry_c": CoordinatePair(**{
+            **_pair().__dict__, "name": "partial", "title": "Partial density",
+            "y_col": "partial_dof", "y_label": "Partial", "y_domain": (0.0, 10.0),
+            "periodic": False,
+        }),
+    }
+    carry_siblings = [
+        {"name": p.name, "title": p.title, "filename": f"{key}.html", "columns": [p.x_col, p.y_col]}
+        for key, p in carry_pairs.items()
+    ]
+    for key, p in carry_pairs.items():
+        out[key] = make_density_interactive(
+            carry_df, p, root / f"{key}.html",
+            config={"plots": {"interactive": {"embed_xyz_payload": True}}},
+            siblings=carry_siblings,
+        )
     out["highlight"] = make_density_interactive(
         _write_trajectory(root / "traj_elements.xyz", elements=_ELEMENTS),
         _pair(x_atoms=_X_ATOMS, y_atoms=_Y_ATOMS, x_dof_type="distance", y_dof_type="distance"),
@@ -225,6 +254,9 @@ class _Page:
                 status: document.getElementById('preview-status').textContent,
                 cards: [...document.getElementById('comparison-cards').children]
                   .map((c) => c.dataset.cardKey),
+                // Per card, top to bottom: its pin number and its bin here.
+                pins: [...document.getElementById('comparison-cards').children]
+                  .map((c) => [Number(c.dataset.pin), c.dataset.bin]),
                 notice: notice.hidden ? null : notice.textContent,
                 preview3dHidden: document.getElementById('preview-3d').hidden,
                 previewCanvas: !!document.querySelector('#preview-viewer canvas'),
@@ -337,6 +369,25 @@ class _Page:
             }"""
         )
 
+    def pin_marks(self) -> list[dict]:
+        """Pin badges on the map (halo annotations left out), in layout order."""
+        return self.page.evaluate(
+            """() => (document.getElementsByClassName('plotly-graph-div')[0].layout.annotations || [])
+                 .filter((a) => /^pin-\\d+$/.test(a.name || ''))
+                 .map((a) => ({name: a.name, x: a.x, y: a.y, opacity: a.opacity,
+                               size: a.font.size, ax: a.ax, ay: a.ay}))"""
+        )
+
+    def pin_shapes(self) -> list[dict]:
+        return self.page.evaluate(
+            """() => (document.getElementsByClassName('plotly-graph-div')[0].layout.shapes || [])
+                 .map((s) => ({name: s.name, type: s.type, x0: s.x0, x1: s.x1, y0: s.y0, y1: s.y1,
+                               xanchor: s.xanchor, yanchor: s.yanchor, opacity: s.opacity}))"""
+        )
+
+    def card(self, number: int):
+        return self.page.locator(f'#comparison-cards .ca-card[data-pin="{number}"]')
+
     def page_data(self) -> dict:
         return self.page.evaluate("JSON.parse(document.getElementById('page-data').textContent)")
 
@@ -397,7 +448,8 @@ def test_click_pins_and_escape_clears(open_page, pages):
     target = page.bins()["full"][0]
     page.click(target)
     page.card_count_is(1)
-    assert page.state()["cards"] == [f"bin:{target['key']}"]
+    assert page.state()["pins"] == [[1, target["key"]]]
+    assert page.state()["cards"][0].startswith("frame:")
 
     page.page.keyboard.press("Escape")
     page.card_count_is(0)
@@ -411,7 +463,8 @@ def test_pin_limit_evicts_oldest_with_notice(open_page, pages):
         page.click(point)
     page.card_count_is(_MAX_PINNED)
     state = page.state()
-    assert state["cards"] == [f"bin:{p['key']}" for p in reversed(targets[1:])]
+    # The oldest pin (1) is removed and its number reused; cards go by number.
+    assert state["pins"] == [[1, targets[3]["key"]], [2, targets[1]["key"]], [3, targets[2]["key"]]]
     assert state["notice"] and f"Pin limit ({_MAX_PINNED})" in state["notice"]
 
 
@@ -799,7 +852,7 @@ def test_overlay_does_not_capture_hover_or_clicks(open_page, pages):
     xi, yi = (int(v) for v in target["key"].split("_"))
     page.click(target)
     page.card_count_is(1)
-    assert page.state()["cards"] == [f"bin:{target['key']}"]
+    assert page.state()["pins"] == [[1, target["key"]]]
     assert page.state()["status"] == f"Bin {target['key']}"
 
     text = page.page.evaluate("document.getElementById('preview-readout').innerText")
@@ -999,3 +1052,213 @@ def test_browser_without_decompression_stream_says_so(open_page, pages):
     assert page.page.evaluate(
         "document.getElementsByClassName('plotly-graph-div')[0]._fullData.length"
     ) == 1
+
+
+# ---------------------------------------------------------------------------
+# Pin markers, and pins carried between pair pages (docs/adr/0002)
+# ---------------------------------------------------------------------------
+
+
+def _bin_of(x: float, y: float, lo: float = -180.0, width: float = 30.0) -> str:
+    """Bin key of a point on the 12-bin dihedral map of these fixtures."""
+    return f"{int((x - lo) // width)}_{int((y - lo) // width)}"
+
+
+_HAS_PIN_1 = (
+    "(document.getElementsByClassName('plotly-graph-div')[0].layout.annotations || [])"
+    ".some((a) => a.name === 'pin-1')"
+)
+
+
+def test_pin_marks_its_frame_and_bin_on_the_map(open_page, pages):
+    page = open_page(pages["bin"])
+    target = page.bins()["full"][0]
+    page.click(target)
+    page.card_count_is(1)
+    page.wait_until(_HAS_PIN_1)
+
+    marks = page.pin_marks()
+    assert [m["name"] for m in marks] == ["pin-1"]
+    x, y = marks[0]["x"], marks[0]["y"]
+    assert _bin_of(x, y) == target["key"]
+
+    shapes = {s["type"]: s for s in page.pin_shapes()}
+    xi, yi = (int(v) for v in target["key"].split("_"))
+    rect = shapes["rect"]
+    assert (rect["x0"], rect["x1"]) == pytest.approx((-180 + 30 * xi, -150 + 30 * xi))
+    assert (rect["y0"], rect["y1"]) == pytest.approx((-180 + 30 * yi, -150 + 30 * yi))
+    assert (shapes["circle"]["xanchor"], shapes["circle"]["yanchor"]) == (x, y)
+
+    assert page.card(1).locator(".ca-pin-badge").inner_text() == "1"
+    assert page.card(1).locator(".ca-card-title b").inner_text().startswith(f"Bin {target['key']} · frame ")
+
+    page.page.keyboard.press("Escape")
+    page.card_count_is(0)
+    page.wait_until(f"!{_HAS_PIN_1}")
+    assert page.pin_marks() == [] and page.pin_shapes() == []
+    assert page.errors == []
+
+
+def test_per_frame_pin_is_a_ring_without_bin_outline(open_page, pages):
+    page = open_page(pages["frame"])
+    page.click(page.bins()["full"][0])
+    page.card_count_is(1)
+    page.wait_until(_HAS_PIN_1)
+    shapes = page.pin_shapes()
+    assert [s["type"] for s in shapes] == ["circle", "circle"]
+    mark = page.pin_marks()[0]
+    assert all((s["xanchor"], s["yanchor"]) == (mark["x"], mark["y"]) for s in shapes)
+    assert page.errors == []
+
+
+def test_closed_pin_number_is_reused_and_cards_go_by_number(open_page, pages):
+    page = open_page(pages["bin"])
+    bins = page.bins()["full"]
+    for point in bins[:3]:
+        page.click(point)
+    page.card_count_is(3)
+
+    page.card(2).locator("button").click()
+    page.card_count_is(2)
+    page.click(bins[3])
+    page.card_count_is(3)
+    assert page.state()["pins"] == [[1, bins[0]["key"]], [2, bins[3]["key"]], [3, bins[2]["key"]]]
+    page.wait_until(
+        "(document.getElementsByClassName('plotly-graph-div')[0].layout.annotations || [])"
+        ".filter((a) => /^pin-\\d+$/.test(a.name)).length === 3"
+    )
+    assert sorted(m["name"] for m in page.pin_marks()) == ["pin-1", "pin-2", "pin-3"]
+    assert page.errors == []
+
+
+def test_card_hover_fades_the_other_markers(open_page, pages):
+    page = open_page(pages["frame"])
+    bins = page.bins()["full"]
+    page.click(bins[0])
+    page.click(bins[1])
+    page.card_count_is(2)
+
+    page.card(1).hover()
+    page.wait_until(
+        "(document.getElementsByClassName('plotly-graph-div')[0].layout.annotations || [])"
+        ".some((a) => a.name === 'pin-2' && a.opacity < 1)"
+    )
+    marks = {m["name"]: m for m in page.pin_marks()}
+    assert (marks["pin-1"]["opacity"], marks["pin-1"]["size"]) == (1, 13)
+    assert (marks["pin-2"]["opacity"], marks["pin-2"]["size"]) == (0.3, 11)
+
+    page.page.mouse.move(5, 5)
+    page.wait_until(
+        "(document.getElementsByClassName('plotly-graph-div')[0].layout.annotations || [])"
+        ".every((a) => a.opacity === undefined || a.opacity === 1)"
+    )
+    assert {m["opacity"] for m in page.pin_marks()} == {1}
+    assert page.errors == []
+
+
+def test_map_hover_lights_the_card_of_a_pinned_bin(open_page, pages):
+    page = open_page(pages["frame"])
+    bins = page.bins()
+    points = {p["key"]: p for p in bins["full"] + bins["empty"]}
+    page.click(bins["full"][0])
+    page.click(bins["full"][1])
+    page.card_count_is(2)
+    linked = (
+        "[...document.querySelectorAll('#comparison-cards .ca-card-linked')]"
+        ".map((c) => Number(c.dataset.pin))"
+    )
+    # The mouse still rests on the bin just clicked; its pin lights up at once
+    # if the nearest frame lies in that bin.
+    pin_bins = dict(page.state()["pins"])
+    if pin_bins[2] == bins["full"][1]["key"]:
+        page.wait_until(f"{linked}.length === 1")
+        assert page.page.evaluate(linked) == [2]
+
+    page.hover_settled(bins["empty"][0])
+    page.wait_until(f"{linked}.length === 0")
+    assert page.page.evaluate(linked) == []
+
+    # The pinned frame's own bin, which in per-frame mode may differ from the click.
+    page.hover_settled(points[pin_bins[1]])
+    page.wait_until(f"{linked}.length > 0")
+    assert 1 in page.page.evaluate(linked)
+    assert page.errors == []
+
+
+def test_badge_click_shows_its_card_without_a_new_pin(open_page, pages):
+    page = open_page(pages["frame"])
+    bins = page.bins()["full"]
+    page.click(bins[0])
+    page.click(bins[1])
+    page.card_count_is(2)
+    page.wait_until(_HAS_PIN_1)
+    index = page.page.evaluate(
+        "document.getElementsByClassName('plotly-graph-div')[0].layout.annotations"
+        ".findIndex((a) => a.name === 'pin-1')"
+    )
+    page.page.locator(f'g.annotation[data-index="{index}"] .annotation-text-g').click()
+    page.wait_until(
+        "document.querySelector('#comparison-cards .ca-card[data-pin=\"1\"]')"
+        ".classList.contains('ca-card-focus')"
+    )
+    assert page.page.evaluate(
+        "document.querySelector('#comparison-cards .ca-card[data-pin=\"1\"]')"
+        ".classList.contains('ca-card-focus')"
+    )
+    assert len(page.state()["cards"]) == 2
+    assert page.errors == []
+
+
+def _pin_and_follow(page, target: dict, pair: str, title: str) -> dict:
+    """Pin *target*, follow the header link to *pair*; return the first page's badge."""
+    page.click(target)
+    page.card_count_is(1)
+    page.wait_until(_HAS_PIN_1)
+    page.wait_until("window.location.hash.startsWith('#pins=')")
+    mark = page.pin_marks()[0]
+    assert "#pins=" in page.page.get_attribute(f'#pair-nav a[data-pair="{pair}"]', "href")
+    page.page.click(f'#pair-nav a[data-pair="{pair}"]')
+    page.page.wait_for_function(
+        f"() => document.getElementById('hdr-title').textContent === {title!r}"
+    )
+    page.card_count_is(1)
+    return mark
+
+
+def test_pin_follows_the_pair_link_to_its_own_coordinates(open_page, pages):
+    page = open_page(pages["carry_a"])
+    mark_a = _pin_and_follow(page, page.bins()["full"][0], "swapped", "Swapped density")
+    assert page.page.url.split("#")[0].endswith("carry_b.html")
+
+    # The axes are swapped on this page, so the frame sits at (y, x).
+    page.wait_until(_HAS_PIN_1)
+    mark_b = page.pin_marks()[0]
+    assert (mark_b["x"], mark_b["y"]) == (mark_a["y"], mark_a["x"])
+    assert page.state()["pins"] == [[1, _bin_of(mark_a["y"], mark_a["x"])]]
+    # The carried structure is drawn, not this page's representative.
+    page.wait_until("!!document.querySelector('#comparison-cards canvas')")
+    assert page.card(1).locator("canvas").count() >= 1
+
+    # The link keeps the pins through a reload.
+    page.page.reload()
+    page.page.wait_for_function(
+        "() => { const gd = document.getElementsByClassName('plotly-graph-div')[0];"
+        " return gd && gd._fullLayout && gd._fullLayout._size; }"
+    )
+    page.card_count_is(1)
+    assert page.state()["pins"] == [[1, _bin_of(mark_a["y"], mark_a["x"])]]
+    assert page.errors == []
+
+
+def test_carried_pin_without_a_value_keeps_its_card_but_no_marker(open_page, pages):
+    page = open_page(pages["carry_a"])
+    # Bins left of -90°: every frame there lacks partial_dof.
+    target = next(p for p in page.bins()["full"] if int(p["key"].split("_")[0]) <= 2)
+    _pin_and_follow(page, target, "partial", "Partial density")
+
+    assert page.state()["pins"] == [[1, ""]]
+    assert page.card(1).locator(".ca-pin-note").inner_text() == (
+        "Not on this map (no partial_dof value)"
+    )
+    assert page.pin_marks() == [] and page.pin_shapes() == []
+    assert page.errors == []

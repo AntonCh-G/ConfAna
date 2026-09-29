@@ -265,6 +265,7 @@ def _resolve_alignment_reference_text(
 
 # Metadata fields extracted per bin when building the bin-frame-metadata dict.
 _BIN_META_FIELDS = [
+    "frame_id",
     "source_file",
     "frame_number",
     "byte_offset",

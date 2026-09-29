@@ -36,6 +36,8 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
         "energy_units": [{"key", "label", "k_B"}, ...]   # from src.units
       } | null,
       "axis_spec": {"x_col", "y_col"},
+      "grid": {"x_min", "y_min", "bin_w", "bin_h",
+               "n_bins_x", "n_bins_y"},  # always present; places pin markers
       "bin_geometry": {"x_min", "y_min", "bin_w", "bin_h",
                         "n_bins_x", "n_bins_y"} | null,
       "bin_frame_metadata": {"<xi>_<yi>": {...}} | null,
@@ -95,6 +97,13 @@ DoF definitions (``CoordinatePair.x_atoms`` / ``y_atoms``). Indices are
 0-based file indices, as in config; ``name`` is the DoF column and ``type``
 the DoF type. ``atoms`` is null for DoF types without atoms (collective,
 external). The 3D views colour these atoms and the axis titles to match.
+
+Every embedded frame record (``bin_frame_metadata`` or ``frame_metadata``)
+carries ``frame_id`` and the values of the DoF columns of every pair of the
+run (from the ``columns`` of the ``siblings`` entries). A pin is one such
+record; the page carries its pins to the sibling pages in the link hash
+(``#pins=…``, see docs/adr/0002 and ``Pins`` in viewer.js), and each page
+places a pin at the frame's own coordinates on its map using ``grid``.
 
 ``navigation`` lists every coordinate-pair page of the same run, in the
 order the caller passes them, each with the file name of its page in the same
@@ -763,6 +772,34 @@ def _build_navigation(pair: CoordinatePair, siblings: Iterable[dict] | None) -> 
     return {"pairs": entries}
 
 
+def _pin_columns(pair: CoordinatePair, siblings: list[dict] | None, df: pd.DataFrame) -> list[str]:
+    """Return the DoF columns every embedded frame record must carry.
+
+    A pin is carried to the run's other pair pages in the link hash (see
+    docs/adr/0002), so each record holds the frame's value for every pair of
+    the run: this pair's two feature columns first (``*_shifted`` when a
+    coordinate transform applies), then each sibling's ``columns`` in order. Columns missing from *df* are left out; such pins show as
+    "not on this map" on that pair's page.
+
+    Raises
+    ------
+    ValueError
+        If a sibling's ``columns`` is given but is not a list of strings.
+    """
+    columns = list(pair.feature_columns)
+    for raw in siblings or []:
+        extra = raw.get("columns") if isinstance(raw, dict) else None
+        if extra is None:
+            continue
+        if not isinstance(extra, (list, tuple)) or not all(isinstance(c, str) for c in extra):
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': sibling page entry {raw!r} needs "
+                "'columns' to be a list of column names."
+            )
+        columns.extend(extra)
+    return [c for c in dict.fromkeys(columns) if c in df.columns]
+
+
 # ---------------------------------------------------------------------------
 # Page builder
 # ---------------------------------------------------------------------------
@@ -878,6 +915,10 @@ def make_density_interactive(
         header links to them, so the reader can jump between the pages of
         different coordinate pairs. Filenames are plain file names in the
         same folder as *outpath*, and the list must contain ``pair`` itself.
+        An optional ``columns`` list names the columns that pair's map is
+        drawn from (``CoordinatePair.feature_columns``); each
+        embedded frame record then also carries those values, so pins follow
+        the reader to the sibling pages.
 
     Returns
     -------
@@ -901,6 +942,7 @@ def make_density_interactive(
     import plotly.graph_objects as go  # noqa: PLC0415
 
     cfg = config or {}
+    siblings = list(siblings) if siblings is not None else None
     interactive_cfg = _resolve_interactive_config(cfg)
     temperature, unit = _resolve_free_energy_defaults(cfg, interactive_cfg["free_energy"])
     plots_cfg = cfg.get("plots", {}) or {}
@@ -1063,6 +1105,7 @@ def make_density_interactive(
     )
 
     embed_xyz = interactive_cfg["embed_xyz_payload"]
+    pin_columns = _pin_columns(pair, siblings, df)
     bin_geometry: dict | None = None
     bin_frame_metadata: dict | None = None
     bin_xyz_payloads: dict | None = None
@@ -1081,7 +1124,7 @@ def make_density_interactive(
         bin_frame_metadata = build_bin_frame_metadata(
             df, x_col=x_col, y_col=y_col,
             x_edges=x_edges, y_edges=y_edges,
-            extra_fields=[x_col, y_col],
+            extra_fields=pin_columns,
         )
         bin_geometry = {
             "x_min": float(x_edges[0]),
@@ -1094,7 +1137,7 @@ def make_density_interactive(
     else:
         # Per-frame mode: embed the full coordinate table so the JavaScript can
         # find the nearest frame to any click point. Practical for small datasets.
-        frame_metadata = _build_frame_metadata_records(df, extra_columns=[x_col, y_col])
+        frame_metadata = _build_frame_metadata_records(df, extra_columns=pin_columns)
 
     axis_atoms = (
         _build_axis_atoms(pair, _known_atom_counts(df, bin_xyz_payloads)) if highlight else None
@@ -1150,6 +1193,14 @@ def make_density_interactive(
             "energy_units": energy_unit_table(),
         },
         "axis_spec": {"x_col": x_col, "y_col": y_col},
+        "grid": {
+            "x_min": float(x_edges[0]),
+            "y_min": float(y_edges[0]),
+            "bin_w": float(x_edges[1] - x_edges[0]),
+            "bin_h": float(y_edges[1] - y_edges[0]),
+            "n_bins_x": n_bins_x,
+            "n_bins_y": n_bins_y,
+        },
         "bin_geometry": bin_geometry,
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
