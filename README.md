@@ -1,9 +1,14 @@
 # ConfAna
 
+[![tests](https://github.com/AntonCh-G/ConfAna/actions/workflows/tests.yml/badge.svg)](https://github.com/AntonCh-G/ConfAna/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Conformer analysis for molecular trajectories. ConfAna reads multi-frame xyz files
 (or a table of precomputed angles), computes carboxyl and ester angles for every frame,
 and produces density maps, conformational states, state-to-state transitions, and
 standalone interactive HTML pages with clickable 3D structures.
+
+[![Interactive density map of MD17 aspirin with a pinned structure and a 3D preview](docs/images/viewer.png)](https://antonch-g.github.io/ConfAna/)
 
 ## Install
 
@@ -17,8 +22,9 @@ pip install -e .[dev]
 
 ## Demo
 
-**[docs/demo/density_dihedral.html](docs/demo/density_dihedral.html)** (8 MB): download it
-(on GitHub, the **Download raw file** button) and open it in any browser. It works offline.
+**[Open the live demo](https://antonch-g.github.io/ConfAna/)**, or download
+[docs/demo/density_dihedral.html](docs/demo/density_dihedral.html) (8 MB; on GitHub, the
+**Download raw file** button) and open it in any browser. It works offline.
 
 It shows the public MD17 aspirin trajectory (211,762 frames). Hover the map to see structures,
 and click a bin to pin one.
