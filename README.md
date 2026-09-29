@@ -67,9 +67,10 @@ coordinate_pairs:                          # one density map + HTML page per pai
 
 ## PIMD trajectories
 
-For path-integral MD, give one xyz file per bead (for example `my_run.pos_00.xyz` …
-`my_run.pos_01.xyz`). ConfAna reads the trajectory and bead IDs from the file names and keeps
-beads separate for transitions. See [examples/pimd_template.yaml](examples/pimd_template.yaml).
+For path-integral MD, give one xyz file per bead (for example `my_run.pos_00.xyz`,
+`my_run.pos_01.xyz`, …). ConfAna reads the trajectory and bead IDs from the file names and keeps
+beads separate for clustering and transitions. Start from
+[examples/pimd_template.yaml](examples/pimd_template.yaml); no PIMD data ships with the repo.
 
 ## Using the interactive page
 

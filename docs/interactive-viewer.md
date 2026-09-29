@@ -23,7 +23,8 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
   file names, so the pages must stay in one folder; keep them together when copying or
   emailing them. With a single coordinate pair no links are shown.
 - The embedded structures and metadata are compressed by default
-  (`interactive.compress_payloads: true`), which is most of the file: on a large run the page shrinks to about a third of its size. Element
+  (`interactive.compress_payloads: true`), which is most of the file: for the MD17 aspirin
+  demo (14,171 occupied bins, 21 atoms), the page goes from 23 MB to 8 MB. Element
   symbols are stored once per page, coordinates as 16-bit integers in steps of
   `interactive.coordinate_step` (default 0.001 Å, so at most 0.0005 Å of rounding — a
   display copy; exact coordinates stay in the trajectory files), metadata column by column
@@ -38,6 +39,10 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
   integers). The page computes the log-count and free-energy-like grids from it with the
   same formulas and 4-decimal rounding as Python. The heatmap inside the Plotly figure is
   stored as float32 (about 7 significant digits, far more than the hover shows).
+- Each frame's metadata includes its `source_file`, by default as a full path.
+  `interactive.source_paths: relative` hides local folders before a page is shared: a file
+  under the working directory is shown relative to it (`data/md17/md17_aspirin.xyz`), any
+  other file by its name only.
 - The vendored 3Dmol.js copy and its BSD license live under `confana/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
   (`interactive.hover_preview`, default `true`). Clicking a bin pins its representative

@@ -1,0 +1,74 @@
+# Template for path-integral MD (PIMD): one ordered xyz file per bead.
+# No data ships with it: point data.path_pattern at your own bead files, e.g.
+#
+#   data/my_run.pos_00.xyz, data/my_run.pos_01.xyz, ...
+#
+#   confana build-interactive --config examples/pimd_template.yaml
+#
+# The atom indices below are for aspirin in the MD17 atom order (0-based);
+# change them for another molecule or atom order.
+
+run_dir: outputs/pimd
+
+data:
+  path_pattern: ./data/my_run.pos_*.xyz
+  trajectory_id_pattern: '^(.+)_\d+$'   # "my_run.pos_03" -> trajectory_id "my_run.pos"
+  bead_id_pattern: '_(\d+)$'            # "my_run.pos_03" -> bead_id "03"
+
+dof:
+  - name: carboxyl_dihedral
+    type: dihedral
+    atoms: [6, 5, 10, 7]        # C6-C5-C7-O2
+    label: "Carboxyl dihedral (°)"
+    domain: [-180, 180]
+    enabled: true
+  - name: ester_dihedral
+    type: dihedral
+    atoms: [5, 6, 12, 11]       # C5-C6-O3-C8
+    label: "Ester dihedral (°)"
+    domain: [-180, 180]
+    enabled: true
+
+coordinate_pairs:                # one density page per pair
+  - name: dihedral
+    x: carboxyl_dihedral
+    y: ester_dihedral
+    title: "Dihedral-angle density"
+
+cache:
+  n_jobs: -1                     # use all CPU cores for the first scan
+
+plots:
+  dpi: 300
+  density:
+    bins: 180                    # per axis (2° bins); more bins = bigger HTML file
+    colormap: viridis
+    log_scale: true
+  interactive:
+    embed_xyz_payload: true      # one 3D structure per occupied bin
+    source_paths: relative       # hide local folders if the page is shared
+    alignment:
+      enabled: true
+      reference: earliest_frame
+      atom_selection: heavy
+
+clustering:
+  algorithm: grid
+  groupby: [trajectory_id, bead_id]   # cluster each bead on its own
+  default:
+    bin_size: 15.0
+    min_count: 100
+    periodic: true
+
+transitions:
+  lag: 1
+  dt: null                       # set frame spacing (s) to get physical rates
+  temperature: null              # set with dt to get free-energy barriers
+
+pimd:
+  enabled: true
+  average_across_beads: true     # transitions per bead, then averaged
+
+outputs:
+  save_csv: true
+  save_parquet: false

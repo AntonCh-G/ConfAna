@@ -1508,3 +1508,52 @@ def test_invalid_coordinate_step_raises(tmp_path, value):
             _make_angle_df(), _plane_pair(), tmp_path / "bad.html",
             config={"plots": {"interactive": {"coordinate_step": value}}},
         )
+
+
+def _source_files(data: dict) -> set[str]:
+    from confana.payload_codec import decode_columns
+
+    records = decode_columns(data["bin_frame_metadata_encoded"])
+    return {record["source_file"] for record in records.values()}
+
+
+def test_source_paths_default_to_absolute(tmp_path):
+    df, path = _bin_df()
+    data = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "abs.html", config=_bin_cfg()
+        ).read_text(encoding="utf-8")
+    )
+    assert _source_files(data) == {str(path)}
+
+
+def test_relative_source_paths_hide_local_folders(tmp_path, monkeypatch):
+    df, path = _bin_df()
+
+    # Under the working directory: the path relative to it.
+    monkeypatch.chdir(path.parent.parent)
+    inside = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "inside.html", config=_bin_cfg(source_paths="relative")
+        ).read_text(encoding="utf-8")
+    )
+    assert _source_files(inside) == {f"{path.parent.name}/{path.name}"}
+
+    # Anywhere else: the file name only.
+    monkeypatch.chdir(tmp_path)
+    outside = _page_data(
+        make_density_interactive(
+            df, _plane_pair(), tmp_path / "outside.html", config=_bin_cfg(source_paths="relative")
+        ).read_text(encoding="utf-8")
+    )
+    assert _source_files(outside) == {path.name}
+    assert str(path.parent) not in (tmp_path / "outside.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", ["short", True, None])
+def test_invalid_source_paths_raises(tmp_path, value):
+    with pytest.raises(ValueError, match="source_paths"):
+        make_density_interactive(
+            _make_angle_df(), _plane_pair(), tmp_path / "bad.html",
+            config={"plots": {"interactive": {"source_paths": value}}},
+        )

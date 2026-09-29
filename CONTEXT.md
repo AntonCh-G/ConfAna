@@ -121,7 +121,7 @@ A PIMD trajectory stored as a single HDF5 file (``trajectory.hdf5``) with datase
 - `potential` — `(n_frames,)` float64 eV
 
 Multiple independent HDF5 runs (e.g. `s0`, `s1`, …) each become one `trajectory_id`.
-All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"` … `"bead_NN"`. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`). `byte_offset` is set to `-1` (sentinel) in all HDF5-sourced rows; structure retrieval uses `source_file` + `frame_number` + `bead_id` instead.
+All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"`, `"bead_01"`, …. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`). `byte_offset` is set to `-1` (sentinel) in all HDF5-sourced rows; structure retrieval uses `source_file` + `frame_number` + `bead_id` instead.
 
 Configured via `data.format: hdf5` and `data.positions_source: bead | centroid` (default `bead`). `trajectory_id` is derived from the parent directory name of each HDF5 file.
 

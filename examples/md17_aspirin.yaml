@@ -45,6 +45,7 @@ plots:
     log_scale: true
   interactive:
     embed_xyz_payload: true      # one 3D structure per occupied bin
+    source_paths: relative       # no local folders in the shared page
     alignment:                   # rotate every structure onto one reference so views compare
       enabled: true
       reference: earliest_frame

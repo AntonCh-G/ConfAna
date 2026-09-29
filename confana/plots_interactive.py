@@ -189,6 +189,11 @@ _DENSITY_SUBTITLE = "Coordinate-density landscape — not a potential energy sur
 # title in every scale mode, so the map keeps one size.
 _COLORBAR_MARGIN_PX = 120
 
+# plots.interactive.source_paths: how the page shows each frame's source file.
+# "absolute" keeps the full path; "relative" hides local folders (see
+# _shareable_source_paths), for pages that will be shared.
+_SOURCE_PATH_MODES = ("absolute", "relative")
+
 # Embedded as page data "scale.modes", so the page's labels come from here.
 # The free-energy value label depends on the unit and is built by
 # _scale_value_label (and the same way in viewer.js).
@@ -566,6 +571,13 @@ def _resolve_interactive_config(cfg: dict) -> dict:
             f"'dark' keys, got {theme_colorscales!r}."
         )
 
+    source_paths = interactive_cfg.get("source_paths", "absolute")
+    if source_paths not in _SOURCE_PATH_MODES:
+        raise ValueError(
+            f"plots.interactive.source_paths must be one of {list(_SOURCE_PATH_MODES)}, "
+            f"got {source_paths!r}."
+        )
+
     return {
         "include_plotlyjs": interactive_cfg.get("include_plotlyjs", True),
         "include_3dmol": interactive_cfg.get("include_3dmol", "inline"),
@@ -581,7 +593,30 @@ def _resolve_interactive_config(cfg: dict) -> dict:
         "theme_colorscales": theme_colorscales,
         "compress_payloads": compress_payloads,
         "coordinate_step": float(coordinate_step),
+        "source_paths": source_paths,
     }
+
+
+def _shareable_source_paths(records: Iterable[dict]) -> None:
+    """Rewrite each record's ``source_file`` so the page reveals no local folders.
+
+    A file under the working directory becomes relative to it
+    (``data/run.xyz``); any other file keeps only its name. Edits in place.
+    """
+    cwd = Path.cwd().resolve()
+    seen: dict[str, str] = {}
+    for record in records:
+        path = record.get("source_file")
+        if not isinstance(path, str):
+            continue
+        if path not in seen:
+            resolved = Path(path).resolve()
+            seen[path] = (
+                resolved.relative_to(cwd).as_posix()
+                if resolved.is_relative_to(cwd)
+                else resolved.name
+            )
+        record["source_file"] = seen[path]
 
 
 def _resolve_free_energy_defaults(cfg: dict, free_energy_cfg: dict) -> tuple[float | None, str]:
@@ -1127,7 +1162,8 @@ def make_density_interactive(
 
     if embed_xyz:
         # Per-bin mode: embed one metadata record and one XYZ payload per occupied
-        # bin instead of the full per-frame table.
+        # bin instead of the full per-frame table (tens of thousands of bins
+        # against millions of frames for a large run).
         from confana.viewer import build_bin_frame_metadata, build_bin_xyz_payloads  # noqa: PLC0415
 
         bin_xyz_payloads = build_bin_xyz_payloads(
@@ -1152,6 +1188,11 @@ def make_density_interactive(
         # Per-frame mode: embed the full coordinate table so the JavaScript can
         # find the nearest frame to any click point. Practical for small datasets.
         frame_metadata = _build_frame_metadata_records(df, extra_columns=pin_columns)
+
+    if interactive_cfg["source_paths"] == "relative":
+        _shareable_source_paths(
+            bin_frame_metadata.values() if bin_frame_metadata is not None else frame_metadata or []
+        )
 
     axis_atoms = (
         _build_axis_atoms(pair, _known_atom_counts(df, bin_xyz_payloads)) if highlight else None
