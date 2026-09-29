@@ -1,4 +1,4 @@
-"""Tests for src/geometry.py."""
+"""Tests for confana/geometry.py."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.geometry import (
+from confana.geometry import (
     _normalize,
     _validate_atom_ids,
     batch_best_fit_plane,

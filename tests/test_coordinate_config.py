@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.coordinate_config import (
+from confana.coordinate_config import (
     list_coordinate_pairs,
     resolve_coordinate_pair,
     resolve_dof_definitions,

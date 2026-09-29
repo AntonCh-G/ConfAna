@@ -1,4 +1,4 @@
-"""Tests for src/io_coordinates.py."""
+"""Tests for confana/io_coordinates.py."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.coordinate_config import resolve_dof_definitions
-from src.coordinates import build_coordinate_table_from_xyz
-from src.io_coordinates import (
+from confana.coordinate_config import resolve_dof_definitions
+from confana.coordinates import build_coordinate_table_from_xyz
+from confana.io_coordinates import (
     REQUIRED_COLUMNS,
     _validate_coordinate_table,
     build_frame_metadata,
@@ -18,8 +18,8 @@ from src.io_coordinates import (
     load_coordinate_table,
     save_coordinate_table,
 )
-from src.io_xyz import iter_xyz_frames
-from src.models import DoFDefinition, FrameRecord
+from confana.io_xyz import iter_xyz_frames
+from confana.models import DoFDefinition, FrameRecord
 import numpy as np
 
 

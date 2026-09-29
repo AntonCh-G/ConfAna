@@ -1,4 +1,4 @@
-"""Tests for src/io_xyz.py — streaming parser and byte-offset indexing."""
+"""Tests for confana/io_xyz.py — streaming parser and byte-offset indexing."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.io_xyz import (
+from confana.io_xyz import (
     _derive_bead_id,
     _derive_trajectory_id,
     _parse_comment_line,
@@ -20,7 +20,7 @@ from src.io_xyz import (
     read_xyz_frame_by_offset,
     scan_xyz_frame_offsets,
 )
-from src.models import FrameIndex, FrameIndexEntry
+from confana.models import FrameIndex, FrameIndexEntry
 
 
 # ---------------------------------------------------------------------------

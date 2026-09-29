@@ -26,12 +26,12 @@ from typing import Any, Union
 import numpy as np
 import pandas as pd
 
-from src.coordinate_config import (
+from confana.coordinate_config import (
     list_coordinate_pairs,
     resolve_coordinate_transforms,
     resolve_dof_definitions,
 )
-from src.models import DoFDefinition, FrameRecord
+from confana.models import DoFDefinition, FrameRecord
 
 # ---------------------------------------------------------------------------
 # Required columns for the standard coordinate table schema.
@@ -409,8 +409,8 @@ def _process_one_file(
         ``local_frame_index``, ``step_number``, ``step_missing`` (arrays),
         plus ``dof_values`` dict of float32 arrays keyed by DoF name.
     """
-    from src.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
-    from src.io_xyz import iter_xyz_frames  # noqa: PLC0415
+    from confana.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
+    from confana.io_xyz import iter_xyz_frames  # noqa: PLC0415
 
     file_coords = np.empty((n_file, file_n_atoms, 3), dtype=np.float32)
     frame_number_arr = np.empty(n_file, dtype=np.int64)
@@ -483,11 +483,11 @@ def _build_coordinate_table_cache(
         ``-1`` = use all available cores.
         Per-stage timer breakdowns are only reported in serial mode (n_jobs=1).
     _timer:
-        Optional :class:`src.bench.StageTimer` instance.  When provided and
+        Optional :class:`confana.bench.StageTimer` instance.  When provided and
         ``n_jobs=1``, fine-grained wall-time measurements are recorded.
         Ignored when ``n_jobs != 1``.
     """
-    from src.io_xyz import load_or_build_xyz_index  # noqa: PLC0415
+    from confana.io_xyz import load_or_build_xyz_index  # noqa: PLC0415
 
     dof_names = [d.name for d in dof_defs if d.enabled]
 
@@ -543,7 +543,7 @@ def _build_coordinate_table_cache(
             effective_limits[i] = min(effective_limits[i], user_end + 1)
 
     if bond_break_cfg and bond_break_cfg.get("enabled", False):
-        from src.bond_check import find_bond_break_frame  # noqa: PLC0415
+        from confana.bond_check import find_bond_break_frame  # noqa: PLC0415
 
         bond_cutoff = float(bond_break_cfg.get("cutoff", 2.0))
 
@@ -644,8 +644,8 @@ def _build_coordinate_table_cache(
     # ------------------------------------------------------------------
     if n_jobs == 1:
         # Serial path: preserves _timer stage breakdown
-        from src.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
-        from src.io_xyz import iter_xyz_frames  # noqa: PLC0415
+        from confana.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
+        from confana.io_xyz import iter_xyz_frames  # noqa: PLC0415
 
         file_start = 0
         for file_idx, source_file in enumerate(source_files):
@@ -857,7 +857,7 @@ def _load_or_build_hdf5_coordinate_table(
     when any HDF5 source file changes (size or mtime) or when DoF definitions
     or ``positions_source`` change.
     """
-    from src.io_hdf5 import (  # noqa: PLC0415
+    from confana.io_hdf5 import (  # noqa: PLC0415
         build_coordinate_table_from_hdf5_files,
         build_hdf5_cache_metadata,
         discover_hdf5_files,
@@ -991,7 +991,7 @@ def load_or_build_coordinate_table_from_config(
     # Apply any configured angular shifts as post-processing (not cached).
     transforms = resolve_coordinate_transforms(config)
     if transforms:
-        from src.coordinates import apply_coordinate_shifts  # avoid circular import at module level
+        from confana.coordinates import apply_coordinate_shifts  # avoid circular import at module level
 
         df = apply_coordinate_shifts(df, transforms)
 
@@ -1041,7 +1041,7 @@ def _per_trajectory_cache_meta(
     Includes the trajectory_id, DoF definitions, and per-file stats
     (path, size, mtime) for every source file.
     """
-    from src.cache import fingerprint_files, _CACHE_META_VERSION  # noqa: PLC0415
+    from confana.cache import fingerprint_files, _CACHE_META_VERSION  # noqa: PLC0415
 
     return {
         "version": _CACHE_META_VERSION,
@@ -1111,7 +1111,7 @@ def load_or_build_trajectory_coordinates(
         ``(df, cache_hit)`` where ``cache_hit`` is True when the existing
         NPZ was reused without rebuilding.
     """
-    from src.cache import matches  # noqa: PLC0415
+    from confana.cache import matches  # noqa: PLC0415
 
     cache_dir = Path(cache_dir)
     safe_id = trajectory_id.replace("/", "_").replace(" ", "_")
@@ -1227,7 +1227,7 @@ def load_or_build_all_coordinates(
     # Apply any configured angular shifts as post-processing (not cached).
     transforms = resolve_coordinate_transforms(config)
     if transforms:
-        from src.coordinates import apply_coordinate_shifts  # avoid circular import at module level
+        from confana.coordinates import apply_coordinate_shifts  # avoid circular import at module level
 
         df = apply_coordinate_shifts(df, transforms)
 

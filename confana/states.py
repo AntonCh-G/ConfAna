@@ -33,8 +33,8 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from src.coordinate_config import list_coordinate_pairs
-from src.models import CoordinatePair
+from confana.coordinate_config import list_coordinate_pairs
+from confana.models import CoordinatePair
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ def assign_conformer_states(
     df:
         Coordinate table with DoF columns.
     pair:
-        :class:`~src.models.CoordinatePair` specifying the 2D analysis space.
+        :class:`~confana.models.CoordinatePair` specifying the 2D analysis space.
         Domains (``x_domain``, ``y_domain``) determine grid range.
         ``pair.periodic`` enables wrapped grid clustering.
         ``pair.state_col`` names the output column.
@@ -518,8 +518,8 @@ def load_or_build_trajectory_states(
     tuple[pd.DataFrame, bool]
         ``(df_with_states, cache_hit)``
     """
-    from src.cache import matches  # noqa: PLC0415
-    from src.io_coordinates import _coerce_dtypes, _read_coordinate_npz, _write_coordinate_npz  # noqa: PLC0415
+    from confana.cache import matches  # noqa: PLC0415
+    from confana.io_coordinates import _coerce_dtypes, _read_coordinate_npz, _write_coordinate_npz  # noqa: PLC0415
 
     cache_dir = Path(cache_dir)
     safe_id = trajectory_id.replace("/", "_").replace(" ", "_")

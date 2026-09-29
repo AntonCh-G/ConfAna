@@ -1,4 +1,4 @@
-"""Tests for src/units.py (energy units for free-energy-like values)."""
+"""Tests for confana/units.py (energy units for free-energy-like values)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from src.units import (
+from confana.units import (
     ENERGY_UNITS,
     energy_unit_table,
     thermal_energy,

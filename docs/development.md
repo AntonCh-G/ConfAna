@@ -2,17 +2,17 @@
 
 ## Repository Layout
 
-- `src/geometry.py`: reusable geometry primitives
-- `src/io_xyz.py`: streaming XYZ ingestion and indexed random access
-- `src/io_coordinates.py`: coordinate-table ingestion and cache-aware loading
-- `src/coordinates.py`: plane/dihedral coordinate extraction
-- `src/states.py`: conformational state assignment
-- `src/transitions.py`: transition counts, probabilities, optional rates, and optional activation barriers
-- `src/plots_static.py`: PNG density and transition plots
-- `src/plots_interactive.py`: standalone interactive HTML outputs
-- `src/viewer.py`: nearest-structure lookup and structure rendering helpers
-- `src/payload_codec.py`: compact encoding of the structures and metadata embedded in the HTML
-- `src/cli.py`: command-line entrypoints
+- `confana/geometry.py`: reusable geometry primitives
+- `confana/io_xyz.py`: streaming XYZ ingestion and indexed random access
+- `confana/io_coordinates.py`: coordinate-table ingestion and cache-aware loading
+- `confana/coordinates.py`: plane/dihedral coordinate extraction
+- `confana/states.py`: conformational state assignment
+- `confana/transitions.py`: transition counts, probabilities, optional rates, and optional activation barriers
+- `confana/plots_static.py`: PNG density and transition plots
+- `confana/plots_interactive.py`: standalone interactive HTML outputs
+- `confana/viewer.py`: nearest-structure lookup and structure rendering helpers
+- `confana/payload_codec.py`: compact encoding of the structures and metadata embedded in the HTML
+- `confana/cli.py`: command-line entrypoints
 - `configs/`: local workflow configurations ignored by git
 
 ## Testing

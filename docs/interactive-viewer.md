@@ -38,7 +38,7 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
   integers). The page computes the log-count and free-energy-like grids from it with the
   same formulas and 4-decimal rounding as Python. The heatmap inside the Plotly figure is
   stored as float32 (about 7 significant digits, far more than the hover shows).
-- The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
+- The vendored 3Dmol.js copy and its BSD license live under `confana/interactive_assets/vendor/`.
 - Hovering the map previews the bin under the cursor in the side panel
   (`interactive.hover_preview`, default `true`). Clicking a bin pins its representative
   frame (the frame closest to the bin centre); Esc or double-click clears pins. At most
@@ -92,7 +92,7 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
     falling back to `transitions.temperature` / `transitions.energy_unit`. With no
     temperature from either, the page opens in `kT` with an empty temperature field.
     An unknown unit or a temperature ≤ 0 stops the build with an error.
-  - The `k_B` values per unit live in one table in `src/units.py`, which the page embeds.
+  - The `k_B` values per unit live in one table in `confana/units.py`, which the page embeds.
 - When the coordinate table has the pair's state column (`state_<pair>`), a `States`
   button tints each bin with its majority state (35 % opacity over the density) and puts
   each state's name at its population-weighted centre (circular mean on periodic axes).

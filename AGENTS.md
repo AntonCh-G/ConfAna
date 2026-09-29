@@ -209,18 +209,18 @@ Design the internal API so that downstream analysis operates on a standard coord
 not directly on xyz frame objects.
 
 ## Suggested repository structure
-- `src/io_xyz.py`
-- `src/io_coordinates.py`
-- `src/models.py`
-- `src/geometry.py`
-- `src/coordinates.py`
-- `src/density.py`
-- `src/states.py`
-- `src/transitions.py`
-- `src/plots_static.py`
-- `src/plots_interactive.py`
-- `src/viewer.py`
-- `src/cli.py`
+- `confana/io_xyz.py`
+- `confana/io_coordinates.py`
+- `confana/models.py`
+- `confana/geometry.py`
+- `confana/coordinates.py`
+- `confana/density.py`
+- `confana/states.py`
+- `confana/transitions.py`
+- `confana/plots_static.py`
+- `confana/plots_interactive.py`
+- `confana/viewer.py`
+- `confana/cli.py`
 - `configs/default.yaml`
 - `tests/test_geometry.py`
 - `tests/test_io_xyz.py`
@@ -367,7 +367,7 @@ For every run, produce:
 
 ### Phase 0 — repo bootstrap
 Create the initial project skeleton:
-- `src/`
+- `confana/`
 - `tests/`
 - `configs/`
 - `outputs/`
@@ -400,7 +400,7 @@ Requirements:
 - missing required config values fail clearly
 
 ### Phase 2 — core data model
-Create `src/models.py` and define the standard internal schema.
+Create `confana/models.py` and define the standard internal schema.
 
 Include:
 - frame metadata model
@@ -413,7 +413,7 @@ Requirements:
 - downstream analysis must operate on the coordinate table, not raw xyz objects
 
 ### Phase 3 — xyz ingestion
-Create `src/io_xyz.py`:
+Create `confana/io_xyz.py`:
 - load multi-frame xyz files
 - preserve file order and frame order
 - parse each frame as:
@@ -486,7 +486,7 @@ TODO:
 - decide whether energy or other metadata should be parsed from the comment line
 
 ### Phase 4 — coordinate-table ingestion
-Create `src/io_coordinates.py`:
+Create `confana/io_coordinates.py`:
 - load precomputed coordinate tables
 - validate required columns
 - map them into the standard downstream schema
@@ -501,7 +501,7 @@ Tests:
 - compatibility with downstream schema
 
 ### Phase 5 — geometry primitives
-Create `src/geometry.py`:
+Create `confana/geometry.py`:
 - best-fit plane through arbitrary atom sets
 - plane normal
 - plane-plane angle
@@ -522,7 +522,7 @@ Tests:
 - degenerate plane cases
 
 ### Phase 6 — coordinate extraction
-Create `src/coordinates.py`:
+Create `confana/coordinates.py`:
 - compute plane-based coordinates
 - compute dihedral-based coordinates
 - build the standard coordinate table
@@ -539,8 +539,8 @@ Requirements:
 
 ### Phase 7 — static density analysis
 Create:
-- `src/density.py`
-- `src/plots_static.py`
+- `confana/density.py`
+- `confana/plots_static.py`
 
 Implement:
 - 2D histogram first
@@ -560,7 +560,7 @@ TODO:
 - colormap
 
 ### Phase 8 — clustering-based state assignment
-Create `src/states.py`.
+Create `confana/states.py`.
 
 Implement:
 - DBSCAN-based clustering
@@ -578,7 +578,7 @@ TODO:
 - `min_samples`
 
 ### Phase 9 — transition analysis
-Create `src/transitions.py`.
+Create `confana/transitions.py`.
 
 Implement:
 - transition counts
@@ -595,7 +595,7 @@ TODO:
 - exact averaging outputs and uncertainty handling
 
 ### Phase 10 — static transition plots
-Extend `src/plots_static.py`.
+Extend `confana/plots_static.py`.
 
 Outputs:
 - transition count heatmaps
@@ -603,7 +603,7 @@ Outputs:
 - rate plots if valid
 
 ### Phase 11 — standalone interactive HTML
-Create `src/plots_interactive.py`.
+Create `confana/plots_interactive.py`.
 
 Implement:
 - standalone HTML output
@@ -616,7 +616,7 @@ Requirements:
 - interactive artifact contains enough metadata for structure retrieval
 
 ### Phase 12 — structure viewer
-Create `src/viewer.py`.
+Create `confana/viewer.py`.
 
 Implement:
 - nearest-structure lookup
@@ -632,7 +632,7 @@ TODO:
 - whether full xyz text is embedded or loaded by token/path
 
 ### Phase 13 — CLI
-Create `src/cli.py`.
+Create `confana/cli.py`.
 
 Commands:
 - `extract-coordinates`

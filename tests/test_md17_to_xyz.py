@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.io_xyz import read_xyz_frame, scan_xyz_frame_offsets
+from confana.io_xyz import read_xyz_frame, scan_xyz_frame_offsets
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "md17_to_xyz.py"
 _spec = importlib.util.spec_from_file_location("md17_to_xyz", _SCRIPT)

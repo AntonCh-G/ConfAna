@@ -66,9 +66,9 @@ def _fmt_fps(fps: float) -> str:
 def _phase_a(cfg: dict, config_path: str) -> int:
     """Force-rebuild the coordinate table and collect fine-grained timing."""
     import yaml
-    from src.bench import StageTimer
-    from src.io_coordinates import load_or_build_coordinate_table_cache
-    from src.io_xyz import load_or_build_xyz_index
+    from confana.bench import StageTimer
+    from confana.io_coordinates import load_or_build_coordinate_table_cache
+    from confana.io_xyz import load_or_build_xyz_index
 
     _section("Phase A — cold build (force_rebuild=True)")
 
@@ -130,7 +130,7 @@ def _phase_a(cfg: dict, config_path: str) -> int:
 
 
 def _print_bottleneck_analysis(timer, total_frames: int) -> None:
-    from src.bench import StageTimer
+    from confana.bench import StageTimer
 
     grand = timer.grand_total() or 1.0
     ranked = sorted(
@@ -194,7 +194,7 @@ def _phase_b(cfg: dict) -> None:
         print("  SKIP: cache not found — run Phase A first.")
         return
 
-    from src.io_coordinates import load_coordinate_table
+    from confana.io_coordinates import load_coordinate_table
 
     t0 = time.perf_counter()
     df = load_coordinate_table(cache_path)
@@ -221,9 +221,9 @@ def _phase_c(cfg: dict) -> None:
     _section("Phase C — geometry micro-benchmark")
 
     import numpy as np
-    from src.geometry import best_fit_plane, dihedral_angle, plane_plane_angle
-    from src.coordinates import compute_angles_plane, compute_angles_dihedral
-    from src.models import FrameRecord
+    from confana.geometry import best_fit_plane, dihedral_angle, plane_plane_angle
+    from confana.coordinates import compute_angles_plane, compute_angles_dihedral
+    from confana.models import FrameRecord
 
     mapping = cfg.get("atom_mapping", {})
     conventions = cfg.get("conventions", {})
@@ -267,11 +267,11 @@ def _phase_c(cfg: dict) -> None:
     carboxyl_dih_ids = clamp(carboxyl_dih_ids)
     ester_dih_ids = clamp(ester_dih_ids)
 
-    from src.coordinates import (
+    from confana.coordinates import (
         batch_compute_angles_dihedral,
         batch_compute_angles_plane,
     )
-    from src.geometry import batch_best_fit_plane, batch_dihedral_angle, batch_plane_plane_angle
+    from confana.geometry import batch_best_fit_plane, batch_dihedral_angle, batch_plane_plane_angle
 
     N_SCALAR = 1_000   # scalar loop iterations
     N_BATCH  = 10_000  # frames per batch call

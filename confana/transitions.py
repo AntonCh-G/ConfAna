@@ -35,8 +35,8 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from src.coordinate_config import list_coordinate_pairs
-from src.models import CoordinatePair
+from confana.coordinate_config import list_coordinate_pairs
+from confana.models import CoordinatePair
 
 _K_B_EV_PER_K = 8.617333262145e-5
 _K_B_J_PER_K = 1.380649e-23
@@ -402,7 +402,7 @@ def analyze_grouped_transitions(
     df:
         Coordinate table with state column ``pair.state_col`` populated.
     pair:
-        :class:`~src.models.CoordinatePair` identifying the analysis space.
+        :class:`~confana.models.CoordinatePair` identifying the analysis space.
         ``pair.state_col`` names the state label column.
     skip_noise_intermediates:
         Forwarded to ``compute_transition_counts``.  When ``True`` (default),
@@ -612,7 +612,7 @@ def _transitions_meta_key(section_name: str, definition: str) -> str:
     """Return the ``_SECTION_ABBR`` key scoped to a definition."""
     # Prefix section names with the definition so plane/dihedral results sit
     # in different NPZ arrays within the same archive.
-    from src.cache import _SECTION_ABBR  # noqa: PLC0415
+    from confana.cache import _SECTION_ABBR  # noqa: PLC0415
 
     return f"{definition}_{_SECTION_ABBR[section_name]}"
 
@@ -665,7 +665,7 @@ def load_or_build_trajectory_transitions(
     """
     import json as _json  # noqa: PLC0415
 
-    from src.cache import embed_meta, matches, read_matrix_section, write_matrix_section  # noqa: PLC0415
+    from confana.cache import embed_meta, matches, read_matrix_section, write_matrix_section  # noqa: PLC0415
 
     root_cfg = root_config or transitions_config
     pairs = list_coordinate_pairs(root_cfg)

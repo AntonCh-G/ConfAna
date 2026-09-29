@@ -1,4 +1,4 @@
-"""Tests for src/plots_interactive.py (Phase 11)."""
+"""Tests for confana/plots_interactive.py (Phase 11)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models import CoordinatePair
-from src.plots_interactive import make_density_interactive, render_density_page
+from confana.models import CoordinatePair
+from confana.plots_interactive import make_density_interactive, render_density_page
 
 
 class _ScriptCollector(HTMLParser):
@@ -49,7 +49,7 @@ def _scripts(content: str) -> list[tuple[dict, str]]:
 
 
 def _asset_text(name: str) -> str:
-    return importlib.resources.files("src.interactive_assets").joinpath(name).read_text(
+    return importlib.resources.files("confana.interactive_assets").joinpath(name).read_text(
         encoding="utf-8"
     )
 
@@ -658,7 +658,7 @@ def test_render_density_page_page_data_survives_script_close_text():
 
 
 def test_render_density_page_rejects_asset_that_closes_its_element(monkeypatch):
-    import src.plots_interactive as plots_interactive
+    import confana.plots_interactive as plots_interactive
 
     real_load = plots_interactive._load_asset
     monkeypatch.setattr(
@@ -816,7 +816,7 @@ def _build(tmp_path, config=None, df=None, name="scale.html") -> tuple[dict, str
 
 def test_scale_embeds_the_count_grid_once(tmp_path):
     """Only counts are embedded; the page derives the other modes' grids."""
-    from src.payload_codec import decode_count_grid
+    from confana.payload_codec import decode_count_grid
 
     data, _ = _build(tmp_path)
     assert "grids" not in data["scale"]
@@ -833,7 +833,7 @@ def test_scale_counts_are_plain_json_without_compression(tmp_path):
 
 
 def test_scale_grids_cover_every_mode():
-    from src.plots_interactive import _scale_grids
+    from confana.plots_interactive import _scale_grids
 
     grids = _scale_grids(np.array([[4, 2, 0], [0, 0, 0], [0, 0, 1]]))
     assert set(grids) == {"counts", "log_counts", "free_energy"}
@@ -845,7 +845,7 @@ def test_scale_grids_cover_every_mode():
 
 
 def test_scale_embeds_unit_table_and_modes(tmp_path):
-    from src.units import energy_unit_table
+    from confana.units import energy_unit_table
 
     data, _ = _build(tmp_path)
     assert data["scale"]["energy_units"] == energy_unit_table()
@@ -904,7 +904,7 @@ def test_invalid_scale_config_raises(tmp_path, config, match):
 
 
 def test_initial_figure_matches_free_energy_default(tmp_path):
-    from src.units import thermal_energy
+    from confana.units import thermal_energy
 
     cfg = {
         "transitions": {"temperature": 300.0, "energy_unit": "kJ/mol"},
@@ -914,8 +914,8 @@ def test_initial_figure_matches_free_energy_default(tmp_path):
     assert data["ui_state"]["scale_mode"] == "free_energy"
     fig_data, _ = _plot_figure(content)
     trace = fig_data[0]
-    from src.payload_codec import decode_count_grid
-    from src.plots_interactive import _scale_grids
+    from confana.payload_codec import decode_count_grid
+    from confana.plots_interactive import _scale_grids
 
     z = _plotly_array(trace["z"])
     assert z.dtype == np.float32
@@ -1019,7 +1019,7 @@ def test_invalid_show_states_raises(tmp_path, value):
 
 
 def test_theme_colorscale_keeps_viridis_on_white_and_trims_it_on_dark():
-    from src.plots_interactive import (
+    from confana.plots_interactive import (
         _PLOTLY_THEME_COLORS,
         _contrast_ratio,
         _named_colorscale,
@@ -1039,7 +1039,7 @@ def test_theme_colorscale_keeps_viridis_on_white_and_trims_it_on_dark():
 
 
 def test_theme_colorscale_trims_near_white_end_on_light():
-    from src.plots_interactive import _contrast_ratio, _named_colorscale, _rgb, _theme_colorscale
+    from confana.plots_interactive import _contrast_ratio, _named_colorscale, _rgb, _theme_colorscale
 
     blues = _named_colorscale("Blues", "test")
     light = _theme_colorscale("Blues", "light")
@@ -1050,14 +1050,14 @@ def test_theme_colorscale_trims_near_white_end_on_light():
 
 
 def test_theme_colorscale_ignores_a_pale_middle():
-    from src.plots_interactive import _named_colorscale, _theme_colorscale
+    from confana.plots_interactive import _named_colorscale, _theme_colorscale
 
     # jet's yellow middle is pale on white, but only the ends are trimmed.
     assert _theme_colorscale("jet", "light") == _named_colorscale("jet", "test")
 
 
 def test_page_embeds_both_theme_colorscales_and_bakes_the_active_one(tmp_path):
-    from src.plots_interactive import _theme_colorscale
+    from confana.plots_interactive import _theme_colorscale
 
     data, content = _build(tmp_path)
     scales = data["scale"]["colorscales"]
@@ -1074,7 +1074,7 @@ def test_page_embeds_both_theme_colorscales_and_bakes_the_active_one(tmp_path):
 
 
 def test_explicit_theme_colorscales_are_used_unchanged(tmp_path):
-    from src.plots_interactive import _named_colorscale
+    from confana.plots_interactive import _named_colorscale
 
     cfg = _interactive_cfg(theme_colorscales={"dark": "plasma_r"})
     data, _ = _build(tmp_path, config=cfg)
@@ -1104,7 +1104,7 @@ def test_invalid_theme_colorscales_raise(tmp_path, value, match):
     [(360, 60), (180, 30), (90, 15), (60, 10), (20, 5), (10, 2), (0.5, 1), (1000, 90), (-360, 60)],
 )
 def test_degree_tick_step(span, step):
-    from src.plots_interactive import _degree_tick_step
+    from confana.plots_interactive import _degree_tick_step
 
     assert _degree_tick_step(span) == step
 
@@ -1120,7 +1120,7 @@ def test_degree_tick_step(span, step):
     ],
 )
 def test_is_degree_axis(dof_type, label, expected):
-    from src.plots_interactive import _is_degree_axis
+    from confana.plots_interactive import _is_degree_axis
 
     assert _is_degree_axis(dof_type, label) is expected
 
@@ -1262,7 +1262,7 @@ def _pin_siblings() -> list[dict]:
 
 @pytest.mark.parametrize("embed", [True, False])
 def test_every_frame_record_carries_frame_id_and_all_pairs_columns(tmp_path, embed):
-    from src.payload_codec import decode_columns
+    from confana.payload_codec import decode_columns
 
     df, _ = _bin_df()
     df["carboxyl_dihedral"] = np.linspace(-170.0, 170.0, len(df))
@@ -1289,8 +1289,8 @@ def test_every_frame_record_carries_frame_id_and_all_pairs_columns(tmp_path, emb
 def test_frame_records_carry_the_shifted_columns_the_maps_use(tmp_path, embed):
     # coordinate_transforms map a pair onto '<dof>_shifted'; pins must carry that
     # column, or they are "not on this map" even on the page they came from.
-    from src.cli import _pair_siblings
-    from src.payload_codec import decode_columns
+    from confana.cli import _pair_siblings
+    from confana.payload_codec import decode_columns
 
     df, _ = _bin_df()
     df["ester_plane_shifted"] = (df["ester_plane"] + 90.0) % 180.0
@@ -1385,7 +1385,7 @@ def _bin_cfg(**interactive) -> dict:
 
 
 def test_compressed_payloads_decode_back_to_the_plain_blocks(tmp_path):
-    from src.payload_codec import decode_columns, decode_structures
+    from confana.payload_codec import decode_columns, decode_structures
 
     df, _ = _bin_df()
     plain = _page_data(
@@ -1438,7 +1438,7 @@ def test_compressed_payloads_shrink_the_embedded_blocks(tmp_path):
 
 
 def test_compressed_per_frame_metadata_round_trips(tmp_path):
-    from src.payload_codec import decode_columns
+    from confana.payload_codec import decode_columns
 
     df = _make_angle_df()
     packed = _page_data(

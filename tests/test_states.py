@@ -1,4 +1,4 @@
-"""Tests for src/states.py (Phase 8)."""
+"""Tests for confana/states.py (Phase 8)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models import CoordinatePair
-from src.states import (
+from confana.models import CoordinatePair
+from confana.states import (
     _resolve_pair_params,
     assign_conformer_states,
     assign_conformer_states_from_config,

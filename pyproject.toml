@@ -31,7 +31,7 @@ dev = [
 Repository = "https://github.com/AntonCh-G/ConfAna"
 
 [project.scripts]
-confana = "src.cli:cli"
+confana = "confana.cli:cli"
 
 [build-system]
 requires = ["setuptools>=77", "wheel"]
@@ -39,10 +39,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["confana*"]
 
 [tool.setuptools.package-data]
-"src.interactive_assets" = [
+"confana.interactive_assets" = [
     "page.html",
     "viewer.css",
     "viewer.js",

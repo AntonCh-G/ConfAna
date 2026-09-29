@@ -1,4 +1,4 @@
-"""Tests for the bundled src/interactive_assets package."""
+"""Tests for the bundled confana/interactive_assets package."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 
 def _assets():
-    return importlib.resources.files("src.interactive_assets")
+    return importlib.resources.files("confana.interactive_assets")
 
 
 def test_viewer_js_does_not_relayout_on_afterplot():
@@ -89,12 +89,12 @@ def _node_has_decompression_stream() -> bool:
     reason="node with DecompressionStream (>= 18) is not installed",
 )
 def test_js_decoder_matches_python_decoder(tmp_path):
-    """Run viewer.js's decoder in Node on blocks encoded by src/payload_codec.py."""
+    """Run viewer.js's decoder in Node on blocks encoded by confana/payload_codec.py."""
     import json
 
     import numpy as np
 
-    from src.payload_codec import (
+    from confana.payload_codec import (
         decode_columns,
         decode_structures,
         encode_columns,

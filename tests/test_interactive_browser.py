@@ -21,8 +21,8 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api")
 
-from src.models import CoordinatePair  # noqa: E402
-from src.plots_interactive import make_density_interactive  # noqa: E402
+from confana.models import CoordinatePair  # noqa: E402
+from confana.plots_interactive import make_density_interactive  # noqa: E402
 
 pytestmark = pytest.mark.browser
 
@@ -801,8 +801,8 @@ def _grids(data: dict) -> dict[str, list[list]]:
     """Every scale mode's grid, as Python builds it from the embedded counts.
 
     The page derives the same grids itself (scaleGrids in viewer.js)."""
-    from src.payload_codec import decode_count_grid
-    from src.plots_interactive import _scale_grids
+    from confana.payload_codec import decode_count_grid
+    from confana.plots_interactive import _scale_grids
 
     counts = data["scale"]["counts"]
     counts = decode_count_grid(counts) if isinstance(counts, dict) else np.array(

@@ -57,7 +57,7 @@
   var axisAtoms = pageData.axis_atoms || null;
 
   // -------------------------------------------------------------------
-  // Payload codec — mirrors src/payload_codec.py
+  // Payload codec — mirrors confana/payload_codec.py
   // -------------------------------------------------------------------
   // Everything between the two markers is self-contained (no DOM, no page
   // data): tests/test_interactive_assets.py cuts it out and runs it in Node
@@ -1420,7 +1420,7 @@
     return unit !== 'kT' && !validTemperature(uiState.temperature) ? 'kT' : unit;
   }
 
-  // Mirrors src.units.thermal_energy: k_B T in the unit, 1 for kT.
+  // Mirrors confana.units.thermal_energy: k_B T in the unit, 1 for kT.
   function thermalEnergy(unit) {
     var kB = energyUnits[unit].k_B;
     return kB == null ? 1 : kB * uiState.temperature;

@@ -1,4 +1,4 @@
-"""Tests for src/io_hdf5.py — HDF5 PIMD trajectory reader.
+"""Tests for confana/io_hdf5.py — HDF5 PIMD trajectory reader.
 
 Uses synthetic HDF5 fixtures (no real trajectory files required).
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.models import DoFDefinition
+from confana.models import DoFDefinition
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,7 +83,7 @@ def _write_fake_hdf5(sim_dir: Path, *, n_frames=N_FRAMES, n_beads=N_BEADS, n_ato
 
 def test_build_coordinate_table_bead_mode(tmp_path):
     """Bead mode produces n_frames * n_beads rows with correct metadata."""
-    from src.io_hdf5 import build_coordinate_table_from_hdf5
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5
 
     sim_dir = tmp_path / "s1"
     h5_path = _write_fake_hdf5(sim_dir)
@@ -103,7 +103,7 @@ def test_build_coordinate_table_bead_mode(tmp_path):
 
 def test_build_coordinate_table_centroid_mode(tmp_path):
     """Centroid mode produces exactly n_frames rows with bead_id = NA."""
-    from src.io_hdf5 import build_coordinate_table_from_hdf5
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5
 
     sim_dir = tmp_path / "s0"
     h5_path = _write_fake_hdf5(sim_dir)
@@ -118,7 +118,7 @@ def test_build_coordinate_table_centroid_mode(tmp_path):
 
 def test_frame_number_and_local_frame_index(tmp_path):
     """frame_number and local_frame_index are 0-based per bead."""
-    from src.io_hdf5 import build_coordinate_table_from_hdf5
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5
 
     sim_dir = tmp_path / "s2"
     h5_path = _write_fake_hdf5(sim_dir)
@@ -133,7 +133,7 @@ def test_frame_number_and_local_frame_index(tmp_path):
 
 def test_multi_file_global_frame_index(tmp_path):
     """global_frame_index is sequential across multiple files."""
-    from src.io_hdf5 import build_coordinate_table_from_hdf5_files
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5_files
 
     paths = []
     for name in ["s0", "s1"]:
@@ -156,7 +156,7 @@ def test_atom_count_mismatch_raises(tmp_path):
     except ImportError:
         pytest.skip("h5py not installed")
 
-    from src.io_hdf5 import build_coordinate_table_from_hdf5
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5
 
     sim_dir = tmp_path / "s_bad"
     hdf5_dir = sim_dir / "hdf5"
@@ -183,7 +183,7 @@ def test_missing_input_xyz_raises(tmp_path):
     except ImportError:
         pytest.skip("h5py not installed")
 
-    from src.io_hdf5 import build_coordinate_table_from_hdf5
+    from confana.io_hdf5 import build_coordinate_table_from_hdf5
 
     sim_dir = tmp_path / "s_noinput"
     hdf5_dir = sim_dir / "hdf5"
@@ -202,7 +202,7 @@ def test_missing_input_xyz_raises(tmp_path):
 
 def test_discover_hdf5_files(tmp_path):
     """discover_hdf5_files returns sorted .hdf5 paths matching the pattern."""
-    from src.io_hdf5 import discover_hdf5_files
+    from confana.io_hdf5 import discover_hdf5_files
 
     for name in ["s0", "s1", "s2"]:
         d = tmp_path / name / "hdf5"
@@ -217,7 +217,7 @@ def test_discover_hdf5_files(tmp_path):
 
 def test_cache_round_trip(tmp_path):
     """_load_or_build_hdf5_coordinate_table writes and reloads NPZ correctly."""
-    from src.io_coordinates import _load_or_build_hdf5_coordinate_table
+    from confana.io_coordinates import _load_or_build_hdf5_coordinate_table
 
     sim_dir = tmp_path / "s1"
     h5_path = _write_fake_hdf5(sim_dir)

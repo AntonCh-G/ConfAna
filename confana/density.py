@@ -134,7 +134,7 @@ def population_free_energy(counts: np.ndarray) -> np.ndarray:
     ``P`` is the population of each bin, so ``P / P_max = counts / counts.max()``.
     The most-populated bin is 0, every other sampled bin is positive, and
     unsampled bins (count 0) are NaN. Multiply by ``k_B · T`` in some unit
-    (see :mod:`src.units`) to get an energy. This is derived from frame
+    (see :mod:`confana.units`) to get an energy. This is derived from frame
     counts, not from energies: it is not a potential energy surface.
 
     Parameters

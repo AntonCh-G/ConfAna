@@ -1,4 +1,4 @@
-"""Tests for src/coordinates.py."""
+"""Tests for confana/coordinates.py."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.coordinate_config import PairTransformSpec
-from src.coordinates import (
+from confana.coordinate_config import PairTransformSpec
+from confana.coordinates import (
     apply_coordinate_shifts,
     apply_pair_transforms,
     build_coordinate_table_from_values,
@@ -16,7 +16,7 @@ from src.coordinates import (
     build_dof_long_table,
     extract_geometry_dof,
 )
-from src.models import DoFDefinition, FrameRecord
+from confana.models import DoFDefinition, FrameRecord
 
 
 # ---------------------------------------------------------------------------

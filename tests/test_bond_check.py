@@ -1,4 +1,4 @@
-"""Tests for src/bond_check.py — bond-break detection with frame range."""
+"""Tests for confana/bond_check.py — bond-break detection with frame range."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.bond_check import find_bond_break_frame
+from confana.bond_check import find_bond_break_frame
 
 
 # ---------------------------------------------------------------------------

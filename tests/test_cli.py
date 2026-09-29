@@ -1,4 +1,4 @@
-"""Tests for src/cli.py (Phase 13)."""
+"""Tests for confana/cli.py (Phase 13)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from src.cli import cli
+from confana.cli import cli
 
 
 # ---------------------------------------------------------------------------

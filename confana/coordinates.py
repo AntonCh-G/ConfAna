@@ -5,7 +5,7 @@ This module bridges the I/O layer (FrameRecord) and the analysis layer
 
 1. **Full-structure mode**: accepts a list of ``FrameRecord`` objects produced
    by ``io_xyz.load_xyz_files`` and computes geometry DoF (dihedrals, distances,
-   bond angles) via a unified :class:`~src.models.DoFDefinition` list.
+   bond angles) via a unified :class:`~confana.models.DoFDefinition` list.
 2. **Coordinate-only mode**: accepts a DataFrame that already contains the
    required DoF columns and normalises them without recomputing geometry.
 
@@ -37,9 +37,9 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from src.angle_domains import wrap_signed_degrees
-from src.coordinate_config import PairTransformSpec
-from src.geometry import (
+from confana.angle_domains import wrap_signed_degrees
+from confana.coordinate_config import PairTransformSpec
+from confana.geometry import (
     batch_bond_angle,
     batch_dihedral_angle,
     batch_distance,
@@ -48,7 +48,7 @@ from src.geometry import (
     distance,
     shift_angle,
 )
-from src.models import DoFDefinition, FrameRecord
+from confana.models import DoFDefinition, FrameRecord
 
 # ---------------------------------------------------------------------------
 # Base metadata columns (always present in coordinate table, before any DoF)
@@ -113,7 +113,7 @@ def extract_geometry_dof(
     frame:
         A ``FrameRecord`` with ``coords`` populated (shape N×3).
     dof_defs:
-        Ordered list of enabled :class:`~src.models.DoFDefinition` objects.
+        Ordered list of enabled :class:`~confana.models.DoFDefinition` objects.
 
     Returns
     -------
@@ -158,7 +158,7 @@ def batch_extract_geometry_dof(
     coords:
         Float array of shape ``(N, A, 3)`` — N frames, A atoms each.
     dof_defs:
-        Ordered list of enabled :class:`~src.models.DoFDefinition` objects.
+        Ordered list of enabled :class:`~confana.models.DoFDefinition` objects.
 
     Returns
     -------
@@ -320,7 +320,7 @@ def apply_pair_transforms(
     x, y:
         1-D float arrays of equal length.
     transforms:
-        Ordered list of :class:`~src.coordinate_config.PairTransformSpec`.
+        Ordered list of :class:`~confana.coordinate_config.PairTransformSpec`.
 
     Returns
     -------
@@ -380,7 +380,7 @@ def build_coordinate_table_from_xyz(
     frames:
         List of ``FrameRecord`` objects with coords populated.
     dof_defs:
-        Ordered list of :class:`~src.models.DoFDefinition` objects (enabled
+        Ordered list of :class:`~confana.models.DoFDefinition` objects (enabled
         and disabled); disabled ones are skipped.
     transforms:
         Optional ``{column_name: shift_degrees}`` map.  Applied after
@@ -509,7 +509,7 @@ def build_coordinate_table_from_values(
         Input DataFrame; must contain the base metadata columns and at least
         one DoF column.
     dof_defs:
-        List of :class:`~src.models.DoFDefinition` objects describing the
+        List of :class:`~confana.models.DoFDefinition` objects describing the
         expected DoF columns.  Only those present in *table* are normalised.
 
     Returns

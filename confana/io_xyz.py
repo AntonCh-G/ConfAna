@@ -35,7 +35,7 @@ from typing import Iterator, Optional
 
 import numpy as np
 
-from src.models import FrameIndex, FrameIndexEntry, FrameRecord
+from confana.models import FrameIndex, FrameIndexEntry, FrameRecord
 
 logger = logging.getLogger(__name__)
 

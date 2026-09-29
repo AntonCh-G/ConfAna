@@ -16,8 +16,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.density import compute_2d_histogram_arrays
-from src.models import CoordinatePair
+from confana.density import compute_2d_histogram_arrays
+from confana.models import CoordinatePair
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ def make_density_png(
     df:
         Standard coordinate table (must contain the DoF columns for ``pair``).
     pair:
-        :class:`~src.models.CoordinatePair` specifying which columns to plot.
+        :class:`~confana.models.CoordinatePair` specifying which columns to plot.
         Domain, labels, and per-pair overrides (bins, colormap, log_scale,
         x_range, y_range) are read from the pair object.
     outpath:

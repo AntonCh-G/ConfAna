@@ -1,4 +1,4 @@
-"""Tests for src/viewer.py (Phase 12)."""
+"""Tests for confana/viewer.py (Phase 12)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.viewer import align_xyz_to_reference, build_bin_xyz_payloads, read_xyz_frame_text
+from confana.viewer import align_xyz_to_reference, build_bin_xyz_payloads, read_xyz_frame_text
 
 
 # ---------------------------------------------------------------------------

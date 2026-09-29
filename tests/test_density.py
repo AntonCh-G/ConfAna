@@ -1,4 +1,4 @@
-"""Tests for src/density.py and src/plots_static.py (Phases 7 and 10)."""
+"""Tests for confana/density.py and confana/plots_static.py (Phases 7 and 10)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.density import compute_2d_histogram
-from src.models import CoordinatePair
-from src.plots_static import (
+from confana.density import compute_2d_histogram
+from confana.models import CoordinatePair
+from confana.plots_static import (
     _compute_state_bin_com_positions,
     _prepare_density_colormap,
     _prepare_density_values,
@@ -406,7 +406,7 @@ def test_make_transition_png_with_barrier_panel(tmp_path):
 
 
 def test_population_free_energy_properties():
-    from src.density import population_free_energy
+    from confana.density import population_free_energy
 
     counts = np.array([[0, 1, 4], [16, 2, 0]])
     fe = population_free_energy(counts)
@@ -425,13 +425,13 @@ def test_population_free_energy_properties():
 
 
 def test_population_free_energy_all_empty_is_nan():
-    from src.density import population_free_energy
+    from confana.density import population_free_energy
 
     assert np.all(np.isnan(population_free_energy(np.zeros((3, 3)))))
 
 
 def test_population_free_energy_rejects_negative_counts():
-    from src.density import population_free_energy
+    from confana.density import population_free_energy
 
     with pytest.raises(ValueError, match="non-negative"):
         population_free_energy(np.array([1, -1]))

@@ -68,7 +68,7 @@ def find_bond_break_frame(
         Last frame to include in the scan (0-based, inclusive).  ``None``
         means scan to end of file.
     """
-    from src.io_xyz import iter_xyz_frames  # noqa: PLC0415
+    from confana.io_xyz import iter_xyz_frames  # noqa: PLC0415
 
     max_frames = (end_frame + 1) if end_frame is not None else None
 

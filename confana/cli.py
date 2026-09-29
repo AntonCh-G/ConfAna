@@ -3,7 +3,7 @@
 Provides six commands that correspond to the major analysis phases.  Each
 command loads the project configuration from a YAML file (default:
 ``configs/default.yaml``) and delegates to the appropriate public API
-functions from the other ``src`` modules.
+functions from the other ``confana`` modules.
 
 Commands
 --------
@@ -59,7 +59,7 @@ def _out_dir(cfg: dict) -> Path:
 
 def _coordinate_pairs(cfg: dict):
     """Return list of (name, CoordinatePair) from config."""
-    from src.coordinate_config import list_coordinate_pairs  # noqa: PLC0415
+    from confana.coordinate_config import list_coordinate_pairs  # noqa: PLC0415
 
     return list_coordinate_pairs(cfg)
 
@@ -98,7 +98,7 @@ def _load_scatter_overlays(cfg: dict, out_dir: Path) -> list[dict]:
     For each entry the xyz files are loaded and DoF values are computed using
     the same geometry code and atom mapping as the main dataset.  The result is
     a list of dicts ready to pass as the ``overlays`` argument to
-    :func:`~src.plots_static.make_density_png`.
+    :func:`~confana.plots_static.make_density_png`.
 
     Parameters
     ----------
@@ -116,7 +116,7 @@ def _load_scatter_overlays(cfg: dict, out_dir: Path) -> list[dict]:
     """
     import copy  # noqa: PLC0415
 
-    from src.io_coordinates import load_or_build_all_coordinates  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_all_coordinates  # noqa: PLC0415
 
     entries = cfg.get("scatter_overlays")
     if not entries:
@@ -187,7 +187,7 @@ def extract_coordinates(config: str) -> None:
     for every frame, and saves the table to the output directory as CSV
     (``outputs.save_csv``) and/or Parquet (``outputs.save_parquet``).
     """
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
 
     cfg = _load_cfg(config)
     out = _out_dir(cfg)
@@ -203,7 +203,7 @@ def extract_coordinates(config: str) -> None:
         click.echo(f"  Saved {csv_path}")
 
     if outputs_cfg.get("save_parquet", False):
-        from src.io_coordinates import save_coordinate_table  # noqa: PLC0415
+        from confana.io_coordinates import save_coordinate_table  # noqa: PLC0415
 
         try:
             parquet_path = save_coordinate_table(df, out / "coordinates_angles.parquet")
@@ -225,8 +225,8 @@ def extract_coordinates(config: str) -> None:
 @_CONFIG_OPTION
 def plot_densities(config: str) -> None:
     """Generate 2D density PNG plots for all configured coordinate pairs (Phase 7)."""
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
-    from src.plots_static import make_density_png  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.plots_static import make_density_png  # noqa: PLC0415
 
     cfg = _load_cfg(config)
     out = _out_dir(cfg)
@@ -257,8 +257,8 @@ def plot_densities(config: str) -> None:
 @_CONFIG_OPTION
 def cluster_states(config: str) -> None:
     """Assign conformational state labels with DBSCAN (Phase 8)."""
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
-    from src.states import assign_conformer_states_from_config  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.states import assign_conformer_states_from_config  # noqa: PLC0415
 
     cfg = _load_cfg(config)
 
@@ -287,10 +287,10 @@ def cluster_states(config: str) -> None:
 @_CONFIG_OPTION
 def compute_transitions(config: str) -> None:
     """Compute transition counts/probabilities and save heatmap PNGs (Phases 9–10)."""
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
-    from src.plots_static import make_transition_png  # noqa: PLC0415
-    from src.states import assign_conformer_states_from_config  # noqa: PLC0415
-    from src.transitions import analyze_grouped_transitions  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.plots_static import make_transition_png  # noqa: PLC0415
+    from confana.states import assign_conformer_states_from_config  # noqa: PLC0415
+    from confana.transitions import analyze_grouped_transitions  # noqa: PLC0415
 
     cfg = _load_cfg(config)
     out = _out_dir(cfg)
@@ -343,9 +343,9 @@ def compute_transitions(config: str) -> None:
 @_CONFIG_OPTION
 def build_interactive(config: str) -> None:
     """Build standalone interactive HTML density plots (Phases 11–12)."""
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
-    from src.plots_interactive import make_density_interactive  # noqa: PLC0415
-    from src.states import assign_conformer_states_from_config  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.plots_interactive import make_density_interactive  # noqa: PLC0415
+    from confana.states import assign_conformer_states_from_config  # noqa: PLC0415
 
     cfg = _load_cfg(config)
     out = _out_dir(cfg)
@@ -379,10 +379,10 @@ def build_interactive(config: str) -> None:
 @click.option("--skip-transitions", is_flag=True, default=False, help="Skip the compute-transitions phase.")
 def run_all(config: str, skip_transitions: bool) -> None:
     """Run the full analysis pipeline sequentially (Phases 0–12)."""
-    from src.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
-    from src.plots_interactive import make_density_interactive  # noqa: PLC0415
-    from src.plots_static import make_density_png, make_transition_png  # noqa: PLC0415
-    from src.states import assign_conformer_states_from_config  # noqa: PLC0415
+    from confana.io_coordinates import load_or_build_coordinate_table_from_config  # noqa: PLC0415
+    from confana.plots_interactive import make_density_interactive  # noqa: PLC0415
+    from confana.plots_static import make_density_png, make_transition_png  # noqa: PLC0415
+    from confana.states import assign_conformer_states_from_config  # noqa: PLC0415
 
     cfg = _load_cfg(config)
     out = _out_dir(cfg)
@@ -427,7 +427,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
 
     # Phases 9–10 — transitions
     if not skip_transitions:
-        from src.transitions import analyze_grouped_transitions  # noqa: PLC0415
+        from confana.transitions import analyze_grouped_transitions  # noqa: PLC0415
 
         click.echo("[+] Computing transitions …")
         for pair_name, pair in pairs:

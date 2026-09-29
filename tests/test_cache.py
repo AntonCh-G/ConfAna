@@ -1,4 +1,4 @@
-"""Tests for src/cache.py."""
+"""Tests for confana/cache.py."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.cache import embed_meta, matches, read_meta
+from confana.cache import embed_meta, matches, read_meta
 
 
 # ---------------------------------------------------------------------------

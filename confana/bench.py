@@ -4,7 +4,7 @@ Usage
 -----
 ::
 
-    from src.bench import StageTimer
+    from confana.bench import StageTimer
 
     timer = StageTimer()
     timer.start("my_stage")

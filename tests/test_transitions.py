@@ -1,4 +1,4 @@
-"""Tests for src/transitions.py (Phase 9)."""
+"""Tests for confana/transitions.py (Phase 9)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models import CoordinatePair
-from src.transitions import (
+from confana.models import CoordinatePair
+from confana.transitions import (
     analyze_grouped_transitions,
     aggregate_pimd_transitions,
     compute_activation_free_energy_barriers,

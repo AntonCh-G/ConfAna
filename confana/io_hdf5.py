@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from src.models import DoFDefinition
+    from confana.models import DoFDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ def build_coordinate_table_from_hdf5(
             "h5py is required for HDF5 trajectories. Install with: uv add h5py"
         ) from exc
 
-    from src.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
+    from confana.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
 
     h5_path = Path(h5_path)
     trajectory_id = _derive_trajectory_id(h5_path)

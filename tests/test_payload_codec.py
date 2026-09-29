@@ -1,4 +1,4 @@
-"""Tests for src/payload_codec.py (Slice 7 — compressed embedded data)."""
+"""Tests for confana/payload_codec.py (Slice 7 — compressed embedded data)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 
-from src.payload_codec import (
+from confana.payload_codec import (
     COLUMNS_FORMAT,
     STRUCTURES_FORMAT,
     decode_columns,

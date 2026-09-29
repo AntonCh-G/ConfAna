@@ -7,13 +7,13 @@ clicking a bin displays frame metadata (and, optionally, a 3D structure via
 
 When ``interactive.embed_xyz_payload: true`` is set in the config, one
 representative XYZ structure per occupied bin is embedded using
-``src.viewer.build_bin_xyz_payloads``.  Clicking bins then opens aligned
+``confana.viewer.build_bin_xyz_payloads``.  Clicking bins then opens aligned
 structures in a browser-native side panel with one 3Dmol.js viewer per open
 structure card.
 
 By default the output is fully offline: Plotly is inlined
 (``include_plotlyjs: true``) and 3Dmol.js is inlined from a vendored copy
-shipped under ``src/interactive_assets/vendor/`` (``include_3dmol: inline``).
+shipped under ``confana/interactive_assets/vendor/`` (``include_3dmol: inline``).
 Both can be switched to ``"cdn"`` for a smaller file when internet access is
 guaranteed.
 
@@ -35,7 +35,7 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
         "grid_decimals": int,
         "modes": {"<mode>": {"label", "value_label", "z_format", "subtitle"}},
         "colorscales": {"light": [[pos, color], ...], "dark": [...]},
-        "energy_units": [{"key", "label", "k_B"}, ...]   # from src.units
+        "energy_units": [{"key", "label", "k_B"}, ...]   # from confana.units
       } | null,
       "axis_spec": {"x_col", "y_col"},
       "grid": {"x_min", "y_min", "bin_w", "bin_h",
@@ -46,7 +46,7 @@ Page-data JSON schema (embedded as ``<script id="page-data">``)
       "bin_xyz_payloads": {"<xi>_<yi>": "<xyz text>"} | null,
       "frame_metadata": [{...}, ...] | null,
       # compress_payloads: true (default) embeds these instead of the three
-      # plain blocks above (src.payload_codec; gzip + base64):
+      # plain blocks above (confana.payload_codec; gzip + base64):
       "bin_frame_metadata_encoded": {...} | null,
       "bin_xyz_payloads_encoded": {...} | null,
       "frame_metadata_encoded": {...} | null,
@@ -87,7 +87,7 @@ mode is active from ``bin_geometry !== null``.
 
 With ``compress_payloads: true`` (the default) those structure and metadata
 blocks are embedded in their ``*_encoded`` form instead, and the plain keys
-are null. The encoders live in :mod:`src.payload_codec`: structures keep one
+are null. The encoders live in :mod:`confana.payload_codec`: structures keep one
 element sequence per page and 16-bit coordinates in steps of
 ``coordinate_step`` ångström, metadata is stored column by column, and both
 are gzipped and base64-encoded. The page unpacks them once on load with the
@@ -125,7 +125,7 @@ multiples of the smallest step in ``steps`` that leaves at most
 ``max_intervals`` intervals across the visible range; the page re-picks the
 step after each zoom or pan (see ``_degree_tick_step``).
 
-``states`` is the per-bin majority state from ``src.states.build_bin_state_overlay``,
+``states`` is the per-bin majority state from ``confana.states.build_bin_state_overlay``,
 one map per clustering group (``clustering.groupby``): labels are not
 unified across groups, so the page shows one group at a time. ``bins`` are
 flat indices ``yi * n_bins_x + xi``; ``states`` index ``labels``.
@@ -149,11 +149,11 @@ import pandas as pd
 
 from collections.abc import Iterable
 
-from src.density import compute_2d_histogram, population_free_energy
-from src.payload_codec import encode_count_grid
-from src.models import CoordinatePair
-from src.states import build_bin_state_overlay, resolve_state_groupby
-from src.units import (
+from confana.density import compute_2d_histogram, population_free_energy
+from confana.payload_codec import encode_count_grid
+from confana.models import CoordinatePair
+from confana.states import build_bin_state_overlay, resolve_state_groupby
+from confana.units import (
     energy_unit_table,
     thermal_energy,
     unit_label,
@@ -260,9 +260,9 @@ def _grid_to_json(grid: np.ndarray, integer: bool = False) -> list[list]:
 # Bundled page assets (template, CSS, JS, vendored 3Dmol.js)
 # ---------------------------------------------------------------------------
 
-_ASSETS_PACKAGE = "src.interactive_assets"
+_ASSETS_PACKAGE = "confana.interactive_assets"
 
-# Kept in sync with src/interactive_assets/vendor/README.txt.
+# Kept in sync with confana/interactive_assets/vendor/README.txt.
 _VENDORED_3DMOL_VERSION = "2.5.5"
 _VENDORED_3DMOL_CDN_URL = (
     f"https://cdn.jsdelivr.net/npm/3dmol@{_VENDORED_3DMOL_VERSION}/build/3Dmol-min.js"
@@ -596,7 +596,7 @@ def _resolve_free_energy_defaults(cfg: dict, free_energy_cfg: dict) -> tuple[flo
     ------
     ValueError
         If the chosen temperature is not a positive number of kelvin, or the
-        chosen unit is not one of :data:`src.units.ENERGY_UNITS`.
+        chosen unit is not one of :data:`confana.units.ENERGY_UNITS`.
     """
     transitions_cfg = cfg.get("transitions", {}) or {}
 
@@ -897,7 +897,7 @@ def make_density_interactive(
         Standard coordinate table containing the DoF columns for ``pair``
         and any optional metadata columns (source_file, byte_offset, etc.).
     pair:
-        :class:`~src.models.CoordinatePair` specifying which columns to plot.
+        :class:`~confana.models.CoordinatePair` specifying which columns to plot.
         Domain, labels, and per-pair overrides (bins, colormap, log_scale,
         x_range, y_range) are read from the pair object.
     outpath:
@@ -1128,7 +1128,7 @@ def make_density_interactive(
     if embed_xyz:
         # Per-bin mode: embed one metadata record and one XYZ payload per occupied
         # bin instead of the full per-frame table.
-        from src.viewer import build_bin_frame_metadata, build_bin_xyz_payloads  # noqa: PLC0415
+        from confana.viewer import build_bin_frame_metadata, build_bin_xyz_payloads  # noqa: PLC0415
 
         bin_xyz_payloads = build_bin_xyz_payloads(
             df, x_col=x_col, y_col=y_col,
@@ -1166,7 +1166,7 @@ def make_density_interactive(
         "frame_metadata_encoded": None,
     }
     if interactive_cfg["compress_payloads"]:
-        from src.payload_codec import encode_columns, encode_structures  # noqa: PLC0415
+        from confana.payload_codec import encode_columns, encode_structures  # noqa: PLC0415
 
         if bin_xyz_payloads is not None:
             encoded["bin_xyz_payloads_encoded"] = encode_structures(
