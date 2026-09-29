@@ -48,7 +48,9 @@ outputs/md17_aspirin/plots/density_dihedral.html   carboxyl vs ester dihedral
 Open it in a browser. No server or internet needed. This is the page in `docs/demo/`.
 
 The script checks the download against a fixed SHA-256 checksum and writes
-`data/md17/md17_aspirin.xyz`. The `data/` folder is git-ignored; MD17 is not redistributed here.
+`data/md17/md17_aspirin.xyz`. The `data/` folder is git-ignored, so the trajectory itself is
+not in this repo. The demo page does embed 14,171 of its frames (one per map bin, coordinates
+rounded to 0.001 Å); see [Data credit](#data-credit).
 
 The key parts of [examples/md17_aspirin.yaml](examples/md17_aspirin.yaml):
 
@@ -129,7 +131,9 @@ python -m playwright install chromium --no-shell firefox   # once, for browser t
 
 ## Data credit
 
-The demo uses the MD17 aspirin trajectory. If you publish results made from it, cite:
+The demo is built from the MD17 aspirin trajectory
+([sgdml.org](http://www.sgdml.org/#datasets)), and the demo page contains a sample of its
+frames. If you publish results made from it, cite:
 
 > S. Chmiela, A. Tkatchenko, H. E. Sauceda, I. Poltavsky, K. T. Schütt, K.-R. Müller,
 > "Machine learning of accurate energy-conserving molecular force fields",
