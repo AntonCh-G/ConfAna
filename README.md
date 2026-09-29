@@ -1,71 +1,13 @@
 # ConfAna
 
-ConfAna is a Python workflow for conformer analysis from ordered multi-frame XYZ trajectories and precomputed coordinate tables. It computes plane-based and dihedral-based conformational coordinates, builds density maps, assigns conformational states, analyzes transitions, and produces both static PNG figures and standalone interactive HTML outputs.
+Conformer analysis for molecular trajectories. ConfAna reads multi-frame xyz files
+(or a table of precomputed angles), computes carboxyl and ester angles for every frame,
+and produces density maps, conformational states, state-to-state transitions, and
+standalone interactive HTML pages with clickable 3D structures.
 
-The project is designed around a coordinate-table boundary so the downstream workflow can operate on either:
+## Install
 
-- full-structure XYZ trajectories
-- coordinate-only tables with precomputed carboxyl and ester values
-
-## What The Workflow Does
-
-For each frame, ConfAna computes two coordinate systems:
-
-- Plane-to-plane definition
-  - carboxyl = angle between the benzene best-fit plane and the carboxyl plane
-  - ester = angle between the benzene best-fit plane and the ester plane
-- Dihedral definition
-  - carboxyl dihedral
-  - ester dihedral
-
-Then, for both definitions, the workflow can:
-
-- build 2D density plots
-- assign states with clustering
-- compute transition counts
-- compute transition probabilities
-- compute physical rates only when `dt` is explicitly provided in config
-- estimate activation free-energy barriers only when both `dt` and `temperature` are explicitly provided in config
-
-## Scientific Scope And Guardrails
-
-- Treat outputs as coordinate-density landscapes unless energies are explicitly available.
-- Do not interpret the result as a true PES just from XYZ structures alone.
-- Do not report physical transition rates unless frame ordering and time spacing are known.
-- Treat activation barriers as rate-derived free-energy estimates, not true potential-energy barriers from a PES.
-- PIMD trajectories preserve bead identity during transition analysis and can be averaged across beads afterward.
-- Current datasets may share one atom ordering, but the code is intended to keep parsing and downstream analysis decoupled for future datasets.
-
-## Current Atom Mapping
-
-All indices below are 0-based Python indices.
-
-- Ring plane: `[0, 1, 2, 3, 5, 6]`
-- Carboxyl plane: `[9, 10, 7]`
-- Ester plane: `[12, 11, 8]`
-- Carboxyl dihedral: `[6, 5, 10, 7]`
-- Ester dihedral: `[5, 6, 12, 11]`
-
-`plane(C1-C6)` is implemented as a best-fit plane through all six ring atoms.
-
-## Repository Layout
-
-- `src/geometry.py`: reusable geometry primitives
-- `src/io_xyz.py`: streaming XYZ ingestion and indexed random access
-- `src/io_coordinates.py`: coordinate-table ingestion and cache-aware loading
-- `src/coordinates.py`: plane/dihedral coordinate extraction
-- `src/states.py`: conformational state assignment
-- `src/transitions.py`: transition counts, probabilities, optional rates, and optional activation barriers
-- `src/plots_static.py`: PNG density and transition plots
-- `src/plots_interactive.py`: standalone interactive HTML outputs
-- `src/viewer.py`: nearest-structure lookup and structure rendering helpers
-- `src/payload_codec.py`: compact encoding of the structures and metadata embedded in the HTML
-- `src/cli.py`: command-line entrypoints
-- `configs/`: local workflow configurations ignored by git
-
-## Installation
-
-ConfAna targets Python 3.11+.
+Python 3.11+.
 
 ```bash
 python -m venv .venv
@@ -73,245 +15,122 @@ source .venv/bin/activate
 pip install -e .[dev]
 ```
 
-## Configuration
+## Demo
 
-The workflow is driven by YAML config. Create or update a local config under `configs/`, for example [configs/default.yaml](configs/default.yaml).
+**[docs/demo/density_dihedral.html](docs/demo/density_dihedral.html)** (8 MB): download it
+(on GitHub, the **Download raw file** button) and open it in any browser. It works offline.
 
-Important sections include:
+It shows the public MD17 aspirin trajectory (211,762 frames). Hover the map to see structures,
+and click a bin to pin one.
 
-- `data`: input path pattern plus trajectory and bead ID extraction rules
-- `atom_mapping`: named atom groups for plane-based coordinates
-- `dihedrals`: named dihedral definitions
-- `coordinate_pairs`: which coordinate pairs get plotted
-- `conventions`: signed/unsigned angle settings
-- `cache`: frame-index and coordinate-cache settings
-- `density`: histogram bins, ranges, and coloring
-- `clustering`: state-assignment settings
-- `transitions`: lag, optional `dt`, and optional activation-barrier settings
-- `interactive`: interactive HTML behavior (Plotly/3Dmol inlining, theme, alignment, XYZ payload embedding)
-- `outputs`: output directory and file settings
+## Quick start: MD17 aspirin
 
-Local configs are intentionally ignored by git because they often contain machine-specific data and output paths.
-
-## CLI Usage
-
-After installation, the CLI is available as `confana`.
+[MD17](http://www.sgdml.org/#datasets) is a public set of ab initio molecular dynamics
+trajectories. Its aspirin trajectory has 211,762 time-ordered frames, 0.5 fs apart.
 
 ```bash
-confana extract-coordinates --config configs/default.yaml
-confana plot-densities --config configs/default.yaml
-confana cluster-states --config configs/default.yaml
-confana compute-transitions --config configs/default.yaml
-confana build-interactive --config configs/default.yaml
-confana run-all --config configs/default.yaml
+python scripts/md17_to_xyz.py                                  # download (193 MB) and convert to xyz
+confana build-interactive --config examples/md17_aspirin.yaml
 ```
 
-## Outputs
-
-Depending on config, a run can produce:
-
-- coordinate table as CSV and/or cached binary data
-- density PNGs for configured coordinate pairs
-- transition PNGs for plane and dihedral state models
-- standalone interactive HTML density plots
-- embedded structure metadata for nearest-frame lookup
-- transition count/probability/rate/barrier matrices in per-trajectory caches when applicable
-
-Typical output filenames include:
-
-- `coordinates_angles.csv`
-- `density_plane.png`
-- `density_dihedral.png`
-- `density_<pair_name>.png`
-- `density_<pair_name>.html`
-- `transition_plane.png`
-- `transition_dihedral.png`
-
-## Dihedral Configuration
-
-Dihedrals are configured as a list of named definitions instead of hard-coded keys under `atom_mapping`.
-
-```yaml
-atom_mapping:
-  ring_plane: [0, 1, 2, 3, 5, 6]
-  carboxyl_plane: [9, 10, 7]
-  ester_plane: [12, 11, 8]
-
-dihedrals:
-  - name: carboxyl_dihedral
-    atoms: [6, 5, 10, 7]
-    label: Carboxyl dihedral
-    convention: signed
-    group: core
-    enabled: true
-  - name: ester_dihedral
-    atoms: [5, 6, 12, 11]
-    label: Ester dihedral
-    convention: signed
-    group: core
-    enabled: true
-  - name: igor1_dihedral
-    atoms: [6, 12, 11, 8]
-    label: Igor 1 dihedral
-    convention: signed
-    group: igor
-    enabled: true
-
-coordinate_pairs:
-  dihedral:
-    x: carboxyl_dihedral
-    y: ester_dihedral
-    x_label: Carboxyl dihedral (degrees)
-    y_label: Ester dihedral (degrees)
-    title: Dihedral-angle density
-  dihedrals_igor:
-    x: igor1_dihedral
-    y: igor2_dihedral
-    x_label: Igor 1 dihedral (degrees)
-    y_label: Igor 2 dihedral (degrees)
-    title: Igor dihedral density
-```
-
-To add a new dihedral:
-
-1. Add a new item under `dihedrals` with a unique `name` and four 0-based atom indices.
-2. Set `enabled: true`.
-3. Update `coordinate_pairs` if you want density and interactive plots for that pair.
-
-Extra named entries under `coordinate_pairs` generate additional density PNG and HTML outputs such as `density_dihedrals_igor.png` and `density_dihedrals_igor.html`.
-
-## Transition Rates And Barriers
-
-Physical rates are computed only when `transitions.dt` is set. Activation free-energy barriers are computed only when both `transitions.dt` and `transitions.temperature` are set.
-
-The default barrier model is Eyring transition-state theory:
-
-```yaml
-transitions:
-  dt: 1e-14
-  temperature: 300.0
-  barrier_model: eyring
-  transmission_coefficient: 1.0
-  attempt_frequency: null
-  energy_conv_factor: 1.0
-  energy_unit: eV
-```
-
-Eyring uses `transmission_coefficient * k_B*T/h` as the prefactor. Arrhenius mode is also supported with `barrier_model: arrhenius`, but it requires an explicit `attempt_frequency` in `s^-1`.
-
-Barriers are computed internally in eV and reported as:
+Result (about 10 seconds after the download):
 
 ```text
-reported_barrier = barrier_eV * energy_conv_factor
+outputs/md17_aspirin/plots/density_dihedral.html   carboxyl vs ester dihedral
 ```
 
-For `kJ/mol`, use `energy_conv_factor: 96.48533212` and `energy_unit: kJ/mol`. Self-transitions and zero/missing-rate off-diagonal entries are reported as `NaN`. Negative barriers are not clamped; they indicate that the configured kinetic model or prefactor is inconsistent with the observed discrete-time rate estimate.
+Open it in a browser. No server or internet needed. This is the page in `docs/demo/`.
 
-## Backwards Compatibility
+The script checks the download against a fixed SHA-256 checksum and writes
+`data/md17/md17_aspirin.xyz`. The `data/` folder is git-ignored; MD17 is not redistributed here.
 
-Legacy configs that still define `carboxyl_dihedral`, `ester_dihedral`, or other `*_dihedral` keys directly under `atom_mapping` continue to work. The list-based `dihedrals:` format is the recommended configuration style.
+The key parts of [examples/md17_aspirin.yaml](examples/md17_aspirin.yaml):
 
-## Testing
+```yaml
+run_dir: outputs/md17_aspirin
+data:
+  path_pattern: ./data/md17/md17_aspirin.xyz
 
-Run the test suite with:
+dof:                                       # angles to compute, 0-based atom indices
+  - {name: carboxyl_dihedral, type: dihedral, atoms: [6, 5, 10, 7]}
+  - {name: ester_dihedral,    type: dihedral, atoms: [5, 6, 12, 11]}
+
+coordinate_pairs:                          # one density map + HTML page per pair
+  - {name: dihedral, x: carboxyl_dihedral, y: ester_dihedral}
+```
+
+## PIMD trajectories
+
+For path-integral MD, give one xyz file per bead (for example `my_run.pos_00.xyz` …
+`my_run.pos_01.xyz`). ConfAna reads the trajectory and bead IDs from the file names and keeps
+beads separate for transitions. See [examples/pimd_template.yaml](examples/pimd_template.yaml).
+
+## Using the interactive page
+
+| Action | What happens |
+|---|---|
+| Hover a bin | 3D structure preview; side panel shows angles, count, state |
+| Click "More info" | Full frame metadata: source file, frame number, byte offset, indices |
+| Click a bin | Pins that frame as a numbered card and map marker |
+| Esc or double-click | Clears all pins |
+| Drag any 3D view | Rotates all views together |
+| Header links | Switch pair pages; pins come along |
+| Scale buttons | `log counts`, `counts`, or `free-energy-like` |
+
+Details: [docs/interactive-viewer.md](docs/interactive-viewer.md).
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `confana extract-coordinates` | xyz → coordinate table (CSV) |
+| `confana plot-densities` | density PNGs (300 dpi) |
+| `confana cluster-states` | assigns a state to every frame |
+| `confana compute-transitions` | transition counts and probabilities (rates if `dt` is set) |
+| `confana build-interactive` | standalone HTML pages |
+| `confana run-all` | all of the above |
+
+All take `--config <file.yaml>`.
+
+## Read the results correctly
+
+- **Density, not energy.** Maps come from frame counts. "Free-energy-like" means
+  `−kT·ln(population)`, not a potential energy surface.
+- **Rates need time.** Physical rates appear only if `transitions.dt` is set.
+  Barriers need both `dt` and `temperature`.
+- **PIMD beads stay separate.** Transitions are computed per bead, then averaged.
+- **Atom indices are 0-based file positions**, not chemical labels.
+
+## Atom mapping (aspirin)
+
+These indices follow the MD17 aspirin atom order.
+
+| Coordinate | Atoms (0-based) |
+|---|---|
+| Ring plane (best fit, C1–C6) | `[0, 1, 2, 3, 5, 6]` |
+| Carboxyl plane | `[9, 10, 7]` |
+| Ester plane | `[12, 11, 8]` |
+| Carboxyl dihedral | `[6, 5, 10, 7]` |
+| Ester dihedral | `[5, 6, 12, 11]` |
+
+## Tests
 
 ```bash
-pytest
+pytest                                              # all tests
+python -m playwright install chromium --no-shell firefox   # once, for browser tests
 ```
 
-The repository includes tests for geometry, XYZ ingestion, coordinate-table loading, clustering, transitions, caching, viewer helpers, and interactive plot generation.
+## Data credit
 
-`tests/test_interactive_browser.py` opens generated HTML pages in headless Chromium,
-offline, and drives them with real mouse and keyboard input (hover preview, pinning,
-double-click, Esc, theme toggle). It needs a one-off browser install:
+The demo uses the MD17 aspirin trajectory. If you publish results made from it, cite:
 
-```bash
-python -m playwright install chromium --no-shell
-```
+> S. Chmiela, A. Tkatchenko, H. E. Sauceda, I. Poltavsky, K. T. Schütt, K.-R. Müller,
+> "Machine learning of accurate energy-conserving molecular force fields",
+> *Sci. Adv.* **3**, e1603015 (2017). https://doi.org/10.1126/sciadv.1603015
 
-Without it these tests are skipped. To skip them explicitly: `pytest -m "not browser"`.
+## More docs
 
-## Notes
-
-- Interactive structure rendering is intended to use browser-native HTML output.
-- Interactive HTML is fully offline by default: Plotly and 3Dmol.js are both inlined into
-  the single output file (`include_plotlyjs: true`, `include_3dmol: inline`). Set either
-  to `cdn` to load from a CDN instead (requires internet, produces a smaller file).
-- Theme follows the browser's OS-level light/dark preference by default
-  (`interactive.theme: auto`); set to `light` or `dark` to force it, or use the in-page toggle.
-- The map's colour scale suits each theme. Its direction never changes (bright means
-  the same in both), but an end that would blend into the background is trimmed: on
-  white, a near-white end (contrast below 1.25:1); on dark, an end below 2:1 contrast
-  with the dark background. Standard viridis on white is unchanged; on dark its darkest
-  purples are dropped. Set `interactive.theme_colorscales: {light: <name>, dark: <name>}`
-  to use given Plotly scales (e.g. `plasma`, `viridis_r`) unchanged instead.
-- Axes measured in degrees (dihedral or angle DoFs; for pairs without a DoF type, axes
-  whose label contains `(°)`) get ticks on multiples of 1, 2, 5, 10, 15, 30, 45, 60 or 90°,
-  whichever gives at most six intervals, e.g. 60° steps across −180…180° and 30° across
-  0…180°. Zooming or panning re-picks the step for the visible range.
-- The header links to the pages of the run's other coordinate pairs, so you can jump
-  between e.g. `density_dihedral.html` and `density_plane.html`. The links are plain
-  file names, so the pages must stay in one folder; keep them together when copying or
-  emailing them. With a single coordinate pair no links are shown.
-- The embedded structures and metadata are compressed by default
-  (`interactive.compress_payloads: true`), which is most of the file: on a large run the page shrinks to about a third of its size. Element
-  symbols are stored once per page, coordinates as 16-bit integers in steps of
-  `interactive.coordinate_step` (default 0.001 Å, so at most 0.0005 Å of rounding — a
-  display copy; exact coordinates stay in the trajectory files), metadata column by column
-  with repeated strings stored once, and both blocks gzipped. The page unpacks them once
-  on load with the browser's own `DecompressionStream`, needing no library and no internet;
-  a browser without it says so in the side panel. Set `compress_payloads: false` to embed
-  plain JSON for debugging. The build fails loudly if the structures do not share one
-  element sequence, or if a coordinate needs more than 16 bits at the chosen step.
-- The vendored 3Dmol.js copy and its BSD license live under `src/interactive_assets/vendor/`.
-- Hovering the map previews the bin under the cursor in the side panel
-  (`interactive.hover_preview`, default `true`). Clicking a bin pins its representative
-  frame (the frame closest to the bin centre); Esc or double-click clears pins. At most
-  `interactive.max_pinned` pins (default 15) are kept: pinning more removes the oldest.
-  - Each pin has a number, shown both on its card and on the map. On the map, a numbered
-    badge with a short arrow points at the frame's exact coordinates, and the bin it falls
-    in is outlined (visible once you zoom in). In per-frame mode
-    (`embed_xyz_payload: false`) the marker is a ring around the frame's point.
-  - A new pin takes the lowest free number, so closing pin 2 frees number 2. Cards are
-    listed by number.
-  - Hovering a card makes its badge bold and fades the others. Hovering a pinned bin on
-    the map outlines its card. Clicking a badge scrolls to its card.
-  - A pin is a frame, not a bin. When you switch pair pages with the header links, the
-    pins come along, carried in the link (`#pins=…`). Each page places a pin at that
-    frame's own coordinates in its pair, keeping its number and structure. A pin with no
-    value for a page's pair keeps its card there, marked "Not on this map". A page opened
-    on its own, not through a header link, starts with no pins. See
-    `docs/adr/0002-pins-are-frames-carried-in-link-hash.md`.
-- Every 3D view colours the atoms that define each axis: x-axis atoms in orange, y-axis
-  atoms in blue, atoms shared by both in pink, all other atoms as grey sticks. The axis
-  titles use the same colours, and a legend in the side panel lists the atom indices
-  (0-based file indices, from the pair's `dof` entries). The build fails if an index is
-  not below the structures' atom count. Turn it off with
-  `interactive.highlight_dof_atoms: false`.
-- The header switches the map's colour scale between `log counts`, `counts` and
-  `free-energy-like` without re-running the pipeline. Free-energy-like values are
-  `F = k_B·T·(−ln(P / P_max))`, where `P` is the bin population: the most-populated bin is
-  0 and unsampled bins stay blank. This is derived from frame counts, not energies, so it
-  is a population-derived free-energy-like surface, not a potential energy surface. The
-  temperature (K) and the unit (`kT`, `kJ/mol`, `kcal/mol`, `eV`, `meV`, `cm⁻¹`) can be
-  changed in the page; `kT` is dimensionless and ignores the temperature. The side panel
-  shows the hovered bin's value in the current unit and its raw count.
-  - `interactive.default_scale` sets the opening mode (`log_counts` | `counts` |
-    `free_energy`); unset, it follows `density.log_scale`.
-  - `interactive.free_energy.temperature` / `.unit` set the opening temperature and unit,
-    falling back to `transitions.temperature` / `transitions.energy_unit`. With no
-    temperature from either, the page opens in `kT` with an empty temperature field.
-    An unknown unit or a temperature ≤ 0 stops the build with an error.
-  - The `k_B` values per unit live in one table in `src/units.py`, which the page embeds.
-- When the coordinate table has the pair's state column (`state_<pair>`), a `States`
-  button tints each bin with its majority state (35 % opacity over the density) and puts
-  each state's name at its population-weighted centre (circular mean on periodic axes).
-  The side panel names the hovered bin's state. Noise or unset frames winning a bin leave
-  it untinted. Without the state column the button is not shown.
-  `interactive.show_states` (default `false`) sets whether the overlay is on at opening.
-  - States are clustered separately per `clustering.groupby` group (e.g. per bead), and
-    their labels are not matched across groups: state `0` of bead 00 can be a different
-    region from state `0` of bead 01. The overlay therefore never pools groups. It shows
-    one group at a time, chosen from a dropdown next to the button (hidden when there is
-    one group).
-- XYZ ingestion is designed around streaming parsing and cached byte-offset frame indices for fast random access.
+- [docs/configuration.md](docs/configuration.md): every config section, rates and barriers
+- [docs/interactive-viewer.md](docs/interactive-viewer.md): viewer behaviour and settings
+- [docs/development.md](docs/development.md): code layout and testing
+- [docs/adr/](docs/adr/): design decisions

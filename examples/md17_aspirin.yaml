@@ -1,0 +1,71 @@
+# ConfAna demo: MD17 aspirin, one public ab initio MD trajectory (211,762 frames).
+# Builds the page committed as docs/demo/density_dihedral.html:
+#
+#   python scripts/md17_to_xyz.py      # downloads MD17 aspirin, writes data/md17/md17_aspirin.xyz
+#   confana build-interactive --config examples/md17_aspirin.yaml
+#   cp outputs/md17_aspirin/plots/density_dihedral.html docs/demo/
+#
+# Data: Chmiela et al., Sci. Adv. 3, e1603015 (2017). All atom indices are 0-based;
+# MD17 aspirin uses the same atom order as the mappings below.
+
+run_dir: outputs/md17_aspirin
+
+data:
+  path_pattern: ./data/md17/md17_aspirin.xyz
+  trajectory_id_pattern: "^(.+)$"   # whole file stem -> trajectory_id "md17_aspirin"
+
+dof:
+  - name: carboxyl_dihedral
+    type: dihedral
+    atoms: [6, 5, 10, 7]        # C6-C5-C7-O2
+    label: "Carboxyl dihedral (°)"
+    domain: [-180, 180]
+    enabled: true
+  - name: ester_dihedral
+    type: dihedral
+    atoms: [5, 6, 12, 11]       # C5-C6-O3-C8
+    label: "Ester dihedral (°)"
+    domain: [-180, 180]
+    enabled: true
+
+coordinate_pairs:                # one density page per pair
+  - name: dihedral
+    x: carboxyl_dihedral
+    y: ester_dihedral
+    title: "Dihedral-angle density"
+
+cache:
+  n_jobs: -1                     # use all CPU cores for the first scan
+
+plots:
+  dpi: 300
+  density:
+    bins: 180                    # per axis (2° bins); more bins = bigger HTML file
+    colormap: viridis
+    log_scale: true
+  interactive:
+    embed_xyz_payload: true      # one 3D structure per occupied bin
+    alignment:                   # rotate every structure onto one reference so views compare
+      enabled: true
+      reference: earliest_frame
+      atom_selection: heavy      # fit on non-hydrogen atoms
+
+clustering:
+  algorithm: grid
+  groupby: [trajectory_id]
+  default:
+    bin_size: 15.0
+    min_count: 100
+    periodic: true
+
+transitions:
+  lag: 1
+  dt: 5.0e-16                    # 0.5 fs between MD17 frames (Chmiela et al. 2017)
+  temperature: null              # not stated in the paper's main text; set it to get barriers
+
+pimd:
+  enabled: false                 # one classical trajectory, no beads
+
+outputs:
+  save_csv: true
+  save_parquet: false
