@@ -8,7 +8,12 @@ Conformer analysis for molecular trajectories. ConfAna reads multi-frame xyz fil
 and produces density maps, conformational states, state-to-state transitions, and
 standalone interactive HTML pages with clickable 3D structures.
 
-[![Interactive density map of MD17 aspirin with a pinned structure and a 3D preview](docs/images/viewer.png)](https://antonch-g.github.io/ConfAna/)
+<a href="https://antonch-g.github.io/ConfAna/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/viewer-dark.png">
+    <img alt="Interactive density map of MD17 aspirin with a pinned structure and a 3D preview" src="docs/images/viewer.png">
+  </picture>
+</a>
 
 ## Install
 
