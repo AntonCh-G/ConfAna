@@ -245,6 +245,46 @@ def make_density_png(
     ValueError
         If the feature columns are not found in ``df``.
     """
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    fig = _density_figure(df, pair, config=config, overlays=overlays)
+    outpath = Path(outpath)
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(outpath, dpi=dpi)
+    plt.close(fig)
+    return outpath
+
+
+def density_png_bytes(
+    df: pd.DataFrame,
+    pair: CoordinatePair,
+    dpi: int,
+    config: dict | None = None,
+) -> bytes:
+    """Return the density figure of :func:`make_density_png` as PNG bytes.
+
+    Same figure (bins, ranges, colour map, state markers), rendered in memory
+    at *dpi*; nothing is written to disk.
+    """
+    import io  # noqa: PLC0415
+
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    fig = _density_figure(df, pair, config=config)
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi)
+    plt.close(fig)
+    return buffer.getvalue()
+
+
+def _density_figure(
+    df: pd.DataFrame,
+    pair: CoordinatePair,
+    config: dict | None = None,
+    overlays: list[dict] | None = None,
+):
+    """Draw the density figure shared by :func:`make_density_png` and
+    :func:`density_png_bytes`; the caller saves and closes it."""
     import matplotlib  # noqa: PLC0415
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt  # noqa: PLC0415
@@ -401,13 +441,7 @@ def make_density_png(
                   framealpha=0.7, handletextpad=0.4)
 
     fig.tight_layout()
-
-    outpath = Path(outpath)
-    outpath.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(outpath, dpi=dpi)
-    plt.close(fig)
-
-    return outpath
+    return fig
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,39 @@ html, body {
   height: 100vh;
 }
 
+/* Viewers that run no scripts (the iPhone Files preview, which also hides
+   <noscript>) see only a picture of the map and a note; the page's first
+   script swaps ca-no-js for ca-js, so everyone else sees only the app. */
+.ca-no-js .ca-app,
+.ca-js .ca-fallback {
+  display: none;
+}
+
+.ca-fallback {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.ca-fallback h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.ca-fallback p {
+  margin: 0 0 12px;
+  color: var(--ca-fg-muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.ca-fallback img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--ca-border);
+  border-radius: 4px;
+}
+
 .ca-header {
   display: flex;
   flex-wrap: wrap;

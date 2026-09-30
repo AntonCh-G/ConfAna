@@ -2036,3 +2036,29 @@ def test_phone_header_keeps_the_pair_links_on_screen(open_phone_page, pages):
     assert header["height"] < 125
     assert header["shown"] == ["#hdr-title", "#hdr-subtitle"]
     assert page.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Viewers that run no scripts (the iPhone Files preview)
+# ---------------------------------------------------------------------------
+
+
+def test_without_scripts_the_page_shows_a_picture_of_the_map_and_a_note(browser, pages):
+    context = browser.new_context(**_PHONE, java_script_enabled=False, offline=True)
+    try:
+        page = context.new_page()
+        page.goto(pages["bin"].as_uri())
+        picture = page.locator(".ca-fallback img").bounding_box()
+        assert picture and picture["height"] > 100 and picture["width"] <= _PHONE["viewport"]["width"]
+        assert "open this file on a computer" in page.locator(".ca-fallback").inner_text()
+        # No empty panels or dead buttons around it.
+        assert not page.locator(".ca-app").is_visible()
+    finally:
+        context.close()
+
+
+def test_with_scripts_the_picture_stays_hidden(open_page, open_phone_page, pages):
+    for page in (open_page(pages["bin"]), open_phone_page(pages["bin"])):
+        assert not page.page.locator(".ca-fallback").is_visible()
+        assert page.page.locator(".ca-app").is_visible()
+        assert page.errors == []

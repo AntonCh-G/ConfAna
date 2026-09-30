@@ -138,6 +138,7 @@ Public API
 
 from __future__ import annotations
 
+import base64
 import html
 import importlib.resources
 import json
@@ -188,6 +189,11 @@ _DENSITY_SUBTITLE = "Coordinate-density landscape — not a potential energy sur
 # Right figure margin: fits the colour bar, its tick labels and its sideways
 # title in every scale mode, so the map keeps one size.
 _COLORBAR_MARGIN_PX = 120
+
+# The picture of the map shown to viewers that run no scripts (the iPhone
+# Files preview): the static density figure (6 x 5 in) at 720 x 600 px, a
+# phone screen's width at about 100 KB.
+_FALLBACK_DPI = 120
 
 # plots.interactive.source_paths: how the page shows each frame's source file.
 # "absolute" keeps the full path; "relative" hides local folders (see
@@ -847,6 +853,14 @@ def _pin_columns(pair: CoordinatePair, siblings: list[dict] | None, df: pd.DataF
 # ---------------------------------------------------------------------------
 
 
+def _fallback_png(df: pd.DataFrame, pair: CoordinatePair, config: dict) -> str:
+    """Base64 PNG of the static density figure, for viewers that run no scripts."""
+    from confana.plots_static import density_png_bytes  # noqa: PLC0415
+
+    png = density_png_bytes(df, pair, dpi=_FALLBACK_DPI, config=config)
+    return base64.b64encode(png).decode("ascii")
+
+
 def render_density_page(page_data: dict) -> str:
     """Assemble the standalone interactive HTML page from *page_data*.
 
@@ -863,8 +877,10 @@ def render_density_page(page_data: dict) -> str:
     - ``"include_3dmol"``: ``"inline"`` or ``"cdn"`` — controls the 3Dmol
       script tag. Only consulted when ``page_data["bin_geometry"]`` is not
       ``None`` (3Dmol is never needed in per-frame metadata-only mode).
+    - ``"fallback_png"`` (optional): base64 PNG of the map, shown with a note
+      only by viewers that run no scripts; without it the note stands alone.
     """
-    reserved = {"plot_html", "include_3dmol"}
+    reserved = {"plot_html", "include_3dmol", "fallback_png"}
     state = {k: v for k, v in page_data.items() if k not in reserved}
     # "<" only occurs inside JSON strings, so escaping it keeps the JSON valid and
     # stops data such as an xyz comment line from closing the <script> element.
@@ -888,9 +904,15 @@ def render_density_page(page_data: dict) -> str:
     scale_modes = (state.get("scale") or {}).get("modes") or {}
     scale_mode = (state.get("ui_state") or {}).get("scale_mode")
     subtitle = (scale_modes.get(scale_mode) or {}).get("subtitle", _DENSITY_SUBTITLE)
+    fallback_png = page_data.get("fallback_png")
+    fallback_image = (
+        f'<img alt="Picture of the density map" src="data:image/png;base64,{fallback_png}">'
+        if fallback_png else ""
+    )
     template = string.Template(_load_asset("page.html"))
     return template.substitute(
         html_title=html.escape(str(pair_info.get("title", "ConfAna"))),
+        fallback_image=fallback_image,
         subtitle=html.escape(subtitle),
         page_data_json=page_data_json,
         plot_fragment=page_data.get("plot_html", ""),
@@ -1287,6 +1309,7 @@ def make_density_interactive(
         },
         "plot_html": plot_html,
         "include_3dmol": interactive_cfg["include_3dmol"],
+        "fallback_png": _fallback_png(df, pair, cfg),
     }
 
     html_str = render_density_page(page_data)

@@ -101,6 +101,11 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
     grows past its built size (700 × 600). The figure's own title is dropped (the header
     names the map) and the colour bar is thinner. A new pin does not scroll the page to
     its card.
+  - Opened where scripts cannot run, the page shows only a picture of the map (the static
+    density figure, 720 × 600 px, about 100 KB of the file) and a note to open it on a
+    computer or in an app that runs web pages. The iPhone Files app does this: its
+    preview runs no scripts and also hides `<noscript>`, so the picture is plain page
+    content that the page's first script hides. Everyone else sees only the app.
 - Every embedded structure is rigidly rotated onto one reference (the earliest frame,
   fitted on heavy atoms), so structures from different bins face the same way and can be
   compared. This is on by default; set `plots.interactive.alignment.enabled: false` to show

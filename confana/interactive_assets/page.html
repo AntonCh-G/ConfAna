@@ -1,14 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="ca-no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- First, before anything is drawn: scripts run, so the picture shown to
+     viewers that run none (the iPhone Files preview) stays hidden. -->
+<script>document.documentElement.className = document.documentElement.className.replace('ca-no-js', 'ca-js');</script>
 <title>$html_title</title>
 <style>
 $inline_css
 </style>
 </head>
 <body>
+<div class="ca-fallback">
+  <h1>$html_title</h1>
+  <p>This is a picture of the interactive map. To explore it (tap a bin, see its molecule in 3D), open this file on a computer, or in an app that runs web pages.</p>
+  $fallback_image
+</div>
 <script id="page-data" type="application/json">$page_data_json</script>
 <div class="ca-app">
   <header class="ca-header">

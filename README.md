@@ -33,6 +33,8 @@ pip install -e .[dev]
 
 It shows the public MD17 aspirin trajectory (211,762 frames). Hover the map to see structures,
 and click a bin to pin one. On a phone, tap a bin to see its structure, then press **Pin**.
+An iPhone's Files app previews the file without running it, so there it shows a picture of
+the map; open the page from a web link, or in an app that runs web pages, to explore it.
 
 ## Quick start: MD17 aspirin
 

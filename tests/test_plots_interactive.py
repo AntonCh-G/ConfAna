@@ -1557,3 +1557,28 @@ def test_invalid_source_paths_raises(tmp_path, value):
             _make_angle_df(), _plane_pair(), tmp_path / "bad.html",
             config={"plots": {"interactive": {"source_paths": value}}},
         )
+
+
+def test_page_carries_a_picture_of_the_map_for_viewers_that_run_no_scripts(tmp_path):
+    # The iPhone Files preview runs no scripts and hides <noscript>, so the
+    # page carries a plain picture of the map and a note, which the page's
+    # first script (in <head>, before anything is drawn) switches off.
+    outpath = make_density_interactive(_make_angle_df(), _dihedral_pair(), tmp_path / "p.html")
+    content = outpath.read_text(encoding="utf-8")
+    head, body = content.split("<body>", 1)
+    assert '<html lang="en" class="ca-no-js">' in head
+    assert any("ca-js" in text for _, text in _scripts(head))
+
+    fallback = re.search(r'<div class="ca-fallback">(.*?)</div>', body, re.S)
+    assert fallback, "no fallback block in the body"
+    assert "open this file on a computer" in fallback.group(1)
+    image = re.search(r'<img [^>]*src="data:image/png;base64,([^"]+)"', fallback.group(1))
+    assert image, "no embedded picture of the map"
+    import base64  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415 (matplotlib depends on Pillow)
+    import io  # noqa: PLC0415
+
+    picture = Image.open(io.BytesIO(base64.b64decode(image.group(1))))
+    assert picture.format == "PNG"
+    # Small enough to add little to the page, big enough for a phone screen.
+    assert 600 <= picture.width <= 800
