@@ -4,6 +4,7 @@
 
 **Conformational map**
 A 2D population landscape derived from PIMD/MD sampling, showing how often each pair of coordinate values occurs. Not a true potential energy surface (PES) unless frame energies are provided. The primary result of this workflow.
+Each coordinate pair has one map, and every view of that pair (the static PNG, the interactive page, the state overlay) reads the same bins. A frame belongs to a bin exactly as `numpy.histogram2d` places it: a value on an interior edge goes to the upper bin, the right edge belongs to the last bin, and a frame outside the map's range is on no bin.
 
 **DoF (degree of freedom)**
 A named scalar quantity computed per frame. Defined in the config `dof:` list with a `type:` field. Supported types:
@@ -60,7 +61,7 @@ A byte-offset index built by scanning each xyz file once. Enables O(1) random ac
 ## Interactive Map Concepts
 
 **Representative frame**
-The one frame shown for a density bin: the sampled frame closest to the bin centre. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames.
+The one frame shown for a density bin when the page embeds structures (`interactive.embed_xyz_payload: true`): the sampled frame closest to the bin centre, ties going to the earlier frame in the coordinate table. It is chosen only among the frames the bin counts, so every bin with frames has one and an empty bin has none. The same frame gives the bin's structure, its metadata and its pin; a bin never shows another frame's structure. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames. Without embedded structures the page holds every frame and pins the frame nearest the click point instead.
 
 **Preview**
 The one bin currently shown in the side panel, with its representative frame and values. It is passing: the next bin pointed at replaces it. With a mouse, hovering a bin previews it; on a touch screen, tapping a bin previews it.

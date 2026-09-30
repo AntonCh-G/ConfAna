@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from confana.density import DensitySettings, build_conformational_map
 from confana.models import CoordinatePair
 from confana.states import (
     _resolve_pair_params,
@@ -836,13 +837,20 @@ def _overlay_df(rows: list[tuple]) -> pd.DataFrame:
 _EDGES = np.linspace(0.0, 3.0, 4)  # 3 bins per axis: flat index = yi * 3 + xi
 
 
+def _overlay(df: pd.DataFrame, periodic: bool = False, bins: int = 3, groupby=None):
+    """State overlay of *df* on a map spanning the overlay pair's domain."""
+    pair = _overlay_pair(periodic)
+    settings = DensitySettings(bins=bins, x_range=pair.x_domain, y_range=pair.y_domain)
+    return build_bin_state_overlay(build_conformational_map(df, pair, settings), groupby=groupby)
+
+
 def _bin_states(group: dict, labels: list[str]) -> dict[int, str]:
     return {b: labels[s] for b, s in zip(group["bins"], group["states"])}
 
 
 def test_overlay_none_without_state_column():
     df = _overlay_df([(0.5, 0.5, "0", "00")]).drop(columns="state_p")
-    assert build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES) is None
+    assert _overlay(df) is None
 
 
 def test_overlay_majority_noise_and_natural_ties():
@@ -853,7 +861,7 @@ def test_overlay_majority_noise_and_natural_ties():
         (0.5, 1.5, "2", "00"), (0.5, 1.5, None, "00"),  # bin 3: tie with NA → real state
         (0.5, 2.5, None, "00"),  # bin 6: NA only → none
     ])
-    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    overlay = _overlay(df)
     assert overlay["labels"] == ["1", "2", "10"]
     assert overlay["groupby"] == []
     (group,) = overlay["groups"]
@@ -867,7 +875,7 @@ def test_overlay_keeps_groups_separate():
         (0.5, 0.5, "0", "00"), (0.5, 0.5, "0", "00"), (2.5, 2.5, "1", "00"),
         (2.5, 2.5, "0", "01"), (0.5, 0.5, "1", "01"), (0.5, 0.5, "1", "01"), (0.5, 0.5, "1", "01"),
     ])
-    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES, groupby=["bead_id"])
+    overlay = _overlay(df, groupby=["bead_id"])
     labels = overlay["labels"]
     g00, g01 = overlay["groups"]
     assert (g00["name"], g00["keys"]) == ("bead 00", {"bead_id": "00"})
@@ -882,7 +890,7 @@ def test_overlay_bins_match_histogram2d():
     y = rng.uniform(-0.5, 3.5, 500)
     x[:5] = 3.0  # right edge belongs to the last bin
     df = _overlay_df([(a, b, "0", "00") for a, b in zip(x, y)])
-    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    overlay = _overlay(df)
     H, _, _ = np.histogram2d(x, y, bins=[_EDGES, _EDGES])
     occupied = {int(yi * 3 + xi) for xi, yi in zip(*np.nonzero(H))}
     assert set(overlay["groups"][0]["bins"]) == occupied
@@ -890,23 +898,30 @@ def test_overlay_bins_match_histogram2d():
 
 def test_overlay_centres_are_population_weighted():
     df = _overlay_df([(0.5, 0.5, "0", "00"), (0.5, 0.5, "0", "00"), (2.0, 2.0, "0", "00")])
-    overlay = build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES)
+    overlay = _overlay(df)
     (centre,) = overlay["groups"][0]["centres"]
     assert centre == {"state": 0, "x": pytest.approx(1.0), "y": pytest.approx(1.0), "frames": 3}
 
 
 def test_overlay_centres_wrap_on_periodic_axes():
-    edges = np.linspace(-180.0, 180.0, 13)
     df = _overlay_df([(170.0, 0.0, "0", "00"), (-170.0, 0.0, "0", "00")])
-    overlay = build_bin_state_overlay(df, _overlay_pair(periodic=True), edges, edges)
+    overlay = _overlay(df, periodic=True, bins=12)
     (centre,) = overlay["groups"][0]["centres"]
     assert abs(centre["x"]) == pytest.approx(180.0)
+
+
+def test_overlay_reads_values_as_the_map_does():
+    # A value that is not a number is off the map, for its counts and its overlay alike.
+    df = _overlay_df([(0.5, 0.5, "0", "00"), ("bad", 0.5, "0", "00")])
+    overlay = _overlay(df)
+    (centre,) = overlay["groups"][0]["centres"]
+    assert centre["frames"] == 1
 
 
 def test_overlay_missing_groupby_column_raises():
     df = _overlay_df([(0.5, 0.5, "0", "00")])
     with pytest.raises(ValueError, match="trajectory_id"):
-        build_bin_state_overlay(df, _overlay_pair(), _EDGES, _EDGES, groupby=["trajectory_id"])
+        _overlay(df, groupby=["trajectory_id"])
 
 
 def test_resolve_state_groupby_reads_clustering_section():

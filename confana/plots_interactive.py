@@ -150,7 +150,12 @@ import pandas as pd
 
 from collections.abc import Iterable
 
-from confana.density import compute_2d_histogram, population_free_energy
+from confana.density import (
+    ConformationalMap,
+    DensitySettings,
+    build_conformational_map,
+    population_free_energy,
+)
 from confana.payload_codec import encode_count_grid
 from confana.models import CoordinatePair
 from confana.states import build_bin_state_overlay, resolve_state_groupby
@@ -853,11 +858,23 @@ def _pin_columns(pair: CoordinatePair, siblings: list[dict] | None, df: pd.DataF
 # ---------------------------------------------------------------------------
 
 
-def _fallback_png(df: pd.DataFrame, pair: CoordinatePair, config: dict) -> str:
-    """Base64 PNG of the static density figure, for viewers that run no scripts."""
+def _grid_geometry(conf_map: ConformationalMap) -> dict:
+    """The page's ``grid`` block: where the map's equal-width bins lie."""
+    return {
+        "x_min": float(conf_map.x_edges[0]),
+        "y_min": float(conf_map.y_edges[0]),
+        "bin_w": float(conf_map.x_edges[1] - conf_map.x_edges[0]),
+        "bin_h": float(conf_map.y_edges[1] - conf_map.y_edges[0]),
+        "n_bins_x": len(conf_map.x_edges) - 1,
+        "n_bins_y": len(conf_map.y_edges) - 1,
+    }
+
+
+def _fallback_png(conf_map: ConformationalMap, groupby: list[str] | None) -> str:
+    """Base64 PNG of the page's own map, for viewers that run no scripts."""
     from confana.plots_static import density_png_bytes  # noqa: PLC0415
 
-    png = density_png_bytes(df, pair, dpi=_FALLBACK_DPI, config=config)
+    png = density_png_bytes(conf_map, dpi=_FALLBACK_DPI, groupby=groupby)
     return base64.b64encode(png).decode("ascii")
 
 
@@ -1009,48 +1026,13 @@ def make_density_interactive(
     siblings = list(siblings) if siblings is not None else None
     interactive_cfg = _resolve_interactive_config(cfg)
     temperature, unit = _resolve_free_energy_defaults(cfg, interactive_cfg["free_energy"])
-    plots_cfg = cfg.get("plots", {}) or {}
-    _, density_cfg = (
-        (cfg, plots_cfg.get("density", {}) or {}) if "density" in plots_cfg else ({}, cfg)
-    )
-
-    # Per-pair overrides take precedence over global density config.
-    bins: int = pair.bins if pair.bins is not None else int(density_cfg.get("bins", 180))
-    colorscale: str = (
-        pair.colormap if pair.colormap is not None else str(density_cfg.get("colormap", "Viridis"))
-    )
-    log_scale: bool = (
-        pair.log_scale if pair.log_scale is not None else bool(density_cfg.get("log_scale", True))
-    )
-
-    # Axis ranges: per-pair override → global config → pair domain
-    raw_x_range = density_cfg.get("x_range")
-    raw_y_range = density_cfg.get("y_range")
-    x_range: tuple[float, float] = (
-        pair.x_range if pair.x_range is not None
-        else (tuple(raw_x_range) if raw_x_range is not None else pair.x_domain)  # type: ignore[assignment]
-    )
-    y_range: tuple[float, float] = (
-        pair.y_range if pair.y_range is not None
-        else (tuple(raw_y_range) if raw_y_range is not None else pair.y_domain)  # type: ignore[assignment]
-    )
-
+    settings = DensitySettings.for_pair(pair, cfg)
+    conf_map = build_conformational_map(df, pair, settings)
+    groupby = resolve_state_groupby(cfg)
+    colorscale, log_scale = settings.colormap, settings.log_scale
+    x_range, y_range = settings.x_range, settings.y_range
     x_col, y_col = pair.feature_columns
-    for col in (x_col, y_col):
-        if col not in df.columns:
-            raise ValueError(
-                f"make_density_interactive: column '{col}' not found in DataFrame. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-    H, x_edges, y_edges = compute_2d_histogram(
-        df,
-        x_col=x_col,
-        y_col=y_col,
-        bins=bins,
-        x_range=x_range,
-        y_range=y_range,
-    )
+    H, x_edges, y_edges = conf_map.counts, conf_map.x_edges, conf_map.y_edges
 
     # Every scale mode's grid is embedded; the figure starts in scale_mode.
     scale_mode = interactive_cfg["default_scale"] or ("log_counts" if log_scale else "counts")
@@ -1106,9 +1088,7 @@ def make_density_interactive(
             axis_titles[axis]["font"] = {"color": plotly_theme[f"axis_{axis}_color"]}
 
     # State overlay: one map per clustering group; the page starts on the first.
-    states = build_bin_state_overlay(
-        df, pair, x_edges, y_edges, groupby=resolve_state_groupby(cfg)
-    )
+    states = build_bin_state_overlay(conf_map, groupby=groupby)
     traces = [heatmap]
     state_annotations: list[dict] = []
     state_group = 0
@@ -1190,24 +1170,9 @@ def make_density_interactive(
         # against millions of frames for a large run).
         from confana.viewer import build_bin_frame_metadata, build_bin_xyz_payloads  # noqa: PLC0415
 
-        bin_xyz_payloads = build_bin_xyz_payloads(
-            df, x_col=x_col, y_col=y_col,
-            x_edges=x_edges, y_edges=y_edges,
-            alignment=interactive_cfg["alignment"],
-        )
-        bin_frame_metadata = build_bin_frame_metadata(
-            df, x_col=x_col, y_col=y_col,
-            x_edges=x_edges, y_edges=y_edges,
-            extra_fields=pin_columns,
-        )
-        bin_geometry = {
-            "x_min": float(x_edges[0]),
-            "y_min": float(y_edges[0]),
-            "bin_w": float(x_edges[1] - x_edges[0]),
-            "bin_h": float(y_edges[1] - y_edges[0]),
-            "n_bins_x": n_bins_x,
-            "n_bins_y": n_bins_y,
-        }
+        bin_xyz_payloads = build_bin_xyz_payloads(conf_map, alignment=interactive_cfg["alignment"])
+        bin_frame_metadata = build_bin_frame_metadata(conf_map, extra_fields=pin_columns)
+        bin_geometry = _grid_geometry(conf_map)
     else:
         # Per-frame mode: embed the full coordinate table so the JavaScript can
         # find the nearest frame to any click point. Practical for small datasets.
@@ -1273,14 +1238,7 @@ def make_density_interactive(
             "energy_units": energy_unit_table(),
         },
         "axis_spec": {"x_col": x_col, "y_col": y_col},
-        "grid": {
-            "x_min": float(x_edges[0]),
-            "y_min": float(y_edges[0]),
-            "bin_w": float(x_edges[1] - x_edges[0]),
-            "bin_h": float(y_edges[1] - y_edges[0]),
-            "n_bins_x": n_bins_x,
-            "n_bins_y": n_bins_y,
-        },
+        "grid": _grid_geometry(conf_map),
         "bin_geometry": bin_geometry,
         "bin_frame_metadata": bin_frame_metadata,
         "bin_xyz_payloads": bin_xyz_payloads,
@@ -1309,7 +1267,7 @@ def make_density_interactive(
         },
         "plot_html": plot_html,
         "include_3dmol": interactive_cfg["include_3dmol"],
-        "fallback_png": _fallback_png(df, pair, cfg),
+        "fallback_png": _fallback_png(conf_map, groupby),
     }
 
     html_str = render_density_page(page_data)

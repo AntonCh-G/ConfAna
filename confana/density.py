@@ -1,131 +1,209 @@
-"""2D histogram computation for conformer coordinate data.
+"""The conformational map of a coordinate pair, and its free-energy-like surface.
 
-This module contains only data-computation logic; it has no dependency on
-matplotlib and can be used independently for testing or downstream processing.
+A :class:`ConformationalMap` is built once per pair and read by every view of
+it: the static PNG, the interactive page and the state overlay. It holds the
+bin edges, the counts, the one rule that places a frame in a bin, and the
+representative frame of each bin. This module has no plotting dependency.
 
 Public API
 ----------
-- ``compute_2d_histogram``
-- ``compute_2d_histogram_arrays``
+- ``DensitySettings``
+- ``ConformationalMap``
+- ``build_conformational_map``
 - ``population_free_energy``
 """
 
 from __future__ import annotations
 
+import numbers
+from dataclasses import dataclass
+from functools import cached_property
+
 import numpy as np
 import pandas as pd
 
+from confana.models import CoordinatePair
 
-def compute_2d_histogram(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    bins: int = 100,
-    x_range: tuple[float, float] | None = None,
-    y_range: tuple[float, float] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute a 2D histogram from two coordinate columns of a DataFrame.
 
-    Rows where either ``x_col`` or ``y_col`` is NA are silently dropped
-    before binning.
+@dataclass(frozen=True)
+class DensitySettings:
+    """How one coordinate pair's map is binned and drawn."""
 
-    Parameters
-    ----------
-    df:
-        DataFrame containing the coordinate columns.
-    x_col:
-        Name of the column to use for the x axis.
-    y_col:
-        Name of the column to use for the y axis.
-    bins:
-        Number of bins along each axis (square grid).
-    x_range:
-        (min, max) limits for the x axis.  If None, the data extent is used.
-    y_range:
-        (min, max) limits for the y axis.  If None, the data extent is used.
+    bins: int
+    """Number of bins along each axis."""
 
-    Returns
-    -------
-    H : np.ndarray, shape (bins, bins)
-        2D count array.  ``H[i, j]`` is the count in the bin at
-        (x_edges[i], y_edges[j]).
-    x_edges : np.ndarray, shape (bins + 1,)
-        Bin edges along the x axis.
-    y_edges : np.ndarray, shape (bins + 1,)
-        Bin edges along the y axis.
+    x_range: tuple[float, float]
+    """(min, max) of the x axis; frames outside it are not on the map."""
+
+    y_range: tuple[float, float]
+    """(min, max) of the y axis; frames outside it are not on the map."""
+
+    colormap: str = "viridis"
+    log_scale: bool = True
+
+    def __post_init__(self) -> None:
+        bins = self.bins
+        if isinstance(bins, bool) or not isinstance(bins, numbers.Integral) or bins < 1:
+            raise ValueError(f"density bins must be a positive integer, got {bins!r}.")
+        object.__setattr__(self, "bins", int(bins))
+        for axis, (lo, hi) in (("x", self.x_range), ("y", self.y_range)):
+            if not lo < hi:
+                raise ValueError(f"density {axis}_range must have min < max, got {(lo, hi)!r}.")
+
+    @classmethod
+    def for_pair(cls, pair: CoordinatePair, config: dict | None = None) -> DensitySettings:
+        """Resolve the settings of *pair*'s map.
+
+        Each value comes from the pair's own override if set, else from
+        ``plots.density`` in *config* (a full config, or the density section
+        alone), else from the pair's domain and the defaults (180 bins,
+        ``viridis``, log scale).
+
+        Raises
+        ------
+        ValueError
+            If the resolved bins are not a positive integer (they are never
+            rounded) or a range is not two numbers with min < max.
+        """
+        cfg = config or {}
+        plots_cfg = cfg.get("plots", {}) or {}
+        density_cfg = (plots_cfg.get("density", {}) or {}) if "density" in plots_cfg else cfg
+
+        def axis_range(override, key, domain) -> tuple[float, float]:
+            raw = override if override is not None else density_cfg.get(key)
+            lo, hi = raw if raw is not None else domain
+            if lo is None or hi is None:
+                raise ValueError(f"density {key} must be two numbers, got {raw!r}.")
+            return float(lo), float(hi)
+
+        try:
+            return cls(
+                bins=pair.bins if pair.bins is not None else density_cfg.get("bins", 180),
+                x_range=axis_range(pair.x_range, "x_range", pair.x_domain),
+                y_range=axis_range(pair.y_range, "y_range", pair.y_domain),
+                colormap=str(
+                    pair.colormap if pair.colormap is not None
+                    else density_cfg.get("colormap", "viridis")
+                ),
+                log_scale=bool(
+                    pair.log_scale if pair.log_scale is not None
+                    else density_cfg.get("log_scale", True)
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Coordinate pair '{pair.name}': {exc}") from exc
+
+
+@dataclass(frozen=True, eq=False)
+class ConformationalMap:
+    """The binned population of one coordinate pair, shared by every view of it."""
+
+    table: pd.DataFrame
+    """Coordinate table the map was built from."""
+
+    pair: CoordinatePair
+    settings: DensitySettings
+    x_edges: np.ndarray
+    y_edges: np.ndarray
+
+    counts: np.ndarray
+    """Frames per bin, ``counts[xi, yi]`` (the ``np.histogram2d`` layout)."""
+
+    def bin_index(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return the bin ``(xi, yi)`` of each point, exactly as :attr:`counts` counts it.
+
+        Bins are right-open except the last, which includes the right edge.
+        Points off the map or with a NaN value get ``-1``.
+        """
+        return _bin_indices(x, self.x_edges), _bin_indices(y, self.y_edges)
+
+    def frame_values(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return each table row's ``(x, y)`` values as the map reads them.
+
+        Floats in table order; a missing or non-numeric value is NaN, so that
+        row is on no bin.
+        """
+        return _pair_values(self.table, self.pair)
+
+    @cached_property
+    def representatives(self) -> dict[tuple[int, int], int]:
+        """Representative frame of each occupied bin: ``{(xi, yi): row position}``.
+
+        The representative is the counted frame nearest the bin centre, so the
+        keys are exactly the bins with a non-zero count; ties go to the earlier
+        row. Positions index :attr:`table` with ``iloc``. Bins are in ``(xi, yi)``
+        order. Computed on first use, then kept.
+        """
+        x, y = self.frame_values()
+        xi, yi = self.bin_index(x, y)
+        rows = np.flatnonzero((xi >= 0) & (yi >= 0))
+        if len(rows) == 0:
+            return {}
+        xi, yi = xi[rows], yi[rows]
+        x_centres = 0.5 * (self.x_edges[:-1] + self.x_edges[1:])
+        y_centres = 0.5 * (self.y_edges[:-1] + self.y_edges[1:])
+        dist = (x[rows] - x_centres[xi]) ** 2 + (y[rows] - y_centres[yi]) ** 2
+        flat = xi * (len(self.y_edges) - 1) + yi
+        # Sort by bin, then distance, then row; the first row of each bin wins.
+        order = np.lexsort((rows, dist, flat))
+        first = np.ones(len(order), dtype=bool)
+        first[1:] = flat[order][1:] != flat[order][:-1]
+        chosen = order[first]
+        return {
+            (int(i), int(j)): int(r)
+            for i, j, r in zip(xi[chosen], yi[chosen], rows[chosen])
+        }
+
+
+def _pair_values(table: pd.DataFrame, pair: CoordinatePair) -> tuple[np.ndarray, np.ndarray]:
+    """The pair's two feature columns as float arrays; missing values become NaN."""
+    x_col, y_col = pair.feature_columns
+    return (
+        pd.to_numeric(table[x_col], errors="coerce").to_numpy(dtype=float),
+        pd.to_numeric(table[y_col], errors="coerce").to_numpy(dtype=float),
+    )
+
+
+def _bin_indices(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Bin index per value as ``np.histogram2d`` assigns it; -1 outside the edges."""
+    v = np.asarray(values, dtype=float)
+    idx = np.searchsorted(edges, v, side="right") - 1
+    idx[v == edges[-1]] = len(edges) - 2
+    idx[~np.isfinite(v) | (v < edges[0]) | (v > edges[-1])] = -1
+    return idx
+
+
+def build_conformational_map(
+    table: pd.DataFrame,
+    pair: CoordinatePair,
+    settings: DensitySettings,
+) -> ConformationalMap:
+    """Bin *table*'s values of *pair* into the map described by *settings*.
 
     Raises
     ------
     ValueError
-        If ``x_col`` or ``y_col`` is not present in ``df``.
+        If a feature column of *pair* is not in *table*.
     """
-    if x_col not in df.columns:
-        raise ValueError(f"Column '{x_col}' not found in DataFrame.")
-    if y_col not in df.columns:
-        raise ValueError(f"Column '{y_col}' not found in DataFrame.")
-
-    # Drop rows where either coordinate is NA
-    mask = df[x_col].notna() & df[y_col].notna()
-    x = df.loc[mask, x_col].astype(float).to_numpy()
-    y = df.loc[mask, y_col].astype(float).to_numpy()
-
-    return compute_2d_histogram_arrays(x, y, bins=bins, x_range=x_range, y_range=y_range)
-
-
-def compute_2d_histogram_arrays(
-    x: np.ndarray,
-    y: np.ndarray,
-    bins: int = 100,
-    x_range: tuple[float, float] | None = None,
-    y_range: tuple[float, float] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute a 2D histogram from pre-extracted coordinate arrays.
-
-    Equivalent to :func:`compute_2d_histogram` but accepts raw numpy arrays
-    instead of a DataFrame.  Non-finite values (NaN, Inf) are silently dropped.
-
-    Parameters
-    ----------
-    x, y:
-        1-D float arrays of equal length.
-    bins:
-        Number of bins along each axis.
-    x_range, y_range:
-        Axis limits; defaults to data extent when None.
-
-    Returns
-    -------
-    H : np.ndarray, shape (bins, bins)
-    x_edges : np.ndarray, shape (bins + 1,)
-    y_edges : np.ndarray, shape (bins + 1,)
-    """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    # Drop non-finite values (may be introduced by restrict_positive_y)
-    finite_mask = np.isfinite(x) & np.isfinite(y)
-    x = x[finite_mask]
-    y = y[finite_mask]
-
-    if len(x) == 0:
-        x_lo, x_hi = x_range if x_range is not None else (0.0, 1.0)
-        y_lo, y_hi = y_range if y_range is not None else (0.0, 1.0)
-        x_edges = np.linspace(x_lo, x_hi, bins + 1)
-        y_edges = np.linspace(y_lo, y_hi, bins + 1)
-        H = np.zeros((bins, bins), dtype=np.int64)
-        return H, x_edges, y_edges
-
-    H, x_edges, y_edges = np.histogram2d(
-        x,
-        y,
-        bins=bins,
-        range=[
-            x_range if x_range is not None else (float(x.min()), float(x.max())),
-            y_range if y_range is not None else (float(y.min()), float(y.max())),
-        ],
+    for col in pair.feature_columns:
+        if col not in table.columns:
+            raise ValueError(
+                f"Coordinate pair '{pair.name}': column '{col}' not found in the "
+                f"coordinate table. Available columns: {list(table.columns)}"
+            )
+    x, y = _pair_values(table, pair)
+    x_edges = np.linspace(*settings.x_range, settings.bins + 1)
+    y_edges = np.linspace(*settings.y_range, settings.bins + 1)
+    finite = np.isfinite(x) & np.isfinite(y)
+    counts, _, _ = np.histogram2d(x[finite], y[finite], bins=[x_edges, y_edges])
+    return ConformationalMap(
+        table=table,
+        pair=pair,
+        settings=settings,
+        x_edges=x_edges,
+        y_edges=y_edges,
+        counts=counts.astype(np.int64),
     )
-
-    return H.astype(np.int64), x_edges, y_edges
 
 
 def population_free_energy(counts: np.ndarray) -> np.ndarray:

@@ -135,6 +135,10 @@ All take `--config <file.yaml>`.
 - **Rates need time.** Physical rates appear only if `transitions.dt` is set.
   Barriers need both `dt` and `temperature`.
 - **PIMD beads stay separate.** Transitions are computed per bead, then averaged.
+- **State markers show one group.** `density_<pair>_states.png` marks each state at the
+  mean of its frames' values (circular for dihedrals) for the first `clustering.groupby`
+  group only, named in the title when there are several: labels are not shared between
+  groups. The interactive page lets you pick the group.
 - **Atom indices are 0-based file positions**, not chemical labels.
 
 ## Atom mapping (aspirin)

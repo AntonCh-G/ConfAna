@@ -12,26 +12,19 @@ Public API
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
-from confana.density import compute_2d_histogram_arrays
+from confana.density import ConformationalMap, DensitySettings, build_conformational_map
 from confana.models import CoordinatePair
+from confana.states import build_bin_state_overlay, resolve_state_groupby
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _split_density_config(config: dict | None) -> tuple[dict, dict]:
-    """Return ``(root_cfg, density_cfg)`` for full-config or density-only input."""
-    cfg = config or {}
-    plots_cfg = cfg.get("plots", {}) or {}
-    if "density" in plots_cfg:
-        return cfg, plots_cfg.get("density", {}) or {}
-    return {}, cfg
 
 
 def _prepare_density_values(H: np.ndarray, log_scale: bool) -> np.ndarray:
@@ -50,147 +43,6 @@ def _prepare_density_colormap(colormap: str):
     cmap = matplotlib.colormaps[colormap].copy()
     cmap.set_bad(color="white")
     return cmap
-
-
-def _weighted_axis_com(
-    centres: np.ndarray,
-    weights: np.ndarray,
-    value_range: tuple[float, float],
-    *,
-    periodic: bool,
-) -> float:
-    """Return the population-weighted centre of mass for one binned axis."""
-    centres = np.asarray(centres, dtype=float)
-    weights = np.asarray(weights, dtype=float)
-    if len(centres) == 0 or float(weights.sum()) <= 0.0:
-        return float("nan")
-
-    if not periodic:
-        return float(np.average(centres, weights=weights))
-
-    lo, hi = value_range
-    width = hi - lo
-    if width <= 0:
-        raise ValueError(f"Invalid periodic range {value_range!r}; expected min < max.")
-
-    theta = ((centres - lo) / width) * (2.0 * np.pi)
-    sin_sum = float(np.sum(weights * np.sin(theta)))
-    cos_sum = float(np.sum(weights * np.cos(theta)))
-    if np.isclose(sin_sum, 0.0) and np.isclose(cos_sum, 0.0):
-        return float(np.average(centres, weights=weights))
-
-    mean_theta = float(np.arctan2(sin_sum, cos_sum) % (2.0 * np.pi))
-    value = lo + (mean_theta / (2.0 * np.pi)) * width
-    if value >= hi:
-        value -= width
-    return float(value)
-
-
-def _compute_state_bin_com_positions(
-    df: pd.DataFrame,
-    state_col: str,
-    x_col: str,
-    y_col: str,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
-    x_range: tuple[float, float],
-    y_range: tuple[float, float],
-    *,
-    periodic: bool,
-) -> pd.DataFrame:
-    """Calculate state marker positions from bin-population centres of mass.
-
-    Each populated bin contributes its centre as a position and its frame count
-    as mass.  This keeps the marker tied to the plotted population landscape
-    instead of to the raw per-frame median.
-    """
-    state_mask = df[state_col].notna() & (df[state_col] != "noise")
-    state_df = df.loc[state_mask & df[x_col].notna() & df[y_col].notna()]
-    if len(state_df) == 0:
-        return pd.DataFrame(columns=[x_col, y_col])
-
-    x_centres = (x_edges[:-1] + x_edges[1:]) / 2.0
-    y_centres = (y_edges[:-1] + y_edges[1:]) / 2.0
-
-    rows: list[dict[str, float | str]] = []
-    for label, group in state_df.groupby(state_col, dropna=False):
-        x_values = group[x_col].astype(float).to_numpy()
-        y_values = group[y_col].astype(float).to_numpy()
-        hist, _, _ = np.histogram2d(x_values, y_values, bins=[x_edges, y_edges])
-        xi, yi = np.nonzero(hist)
-        if len(xi) == 0:
-            continue
-
-        weights = hist[xi, yi].astype(float)
-        rows.append(
-            {
-                state_col: str(label),
-                x_col: _weighted_axis_com(
-                    x_centres[xi],
-                    weights,
-                    x_range,
-                    periodic=periodic,
-                ),
-                y_col: _weighted_axis_com(
-                    y_centres[yi],
-                    weights,
-                    y_range,
-                    periodic=periodic,
-                ),
-            }
-        )
-
-    if not rows:
-        return pd.DataFrame(columns=[x_col, y_col])
-
-    return pd.DataFrame(rows).set_index(state_col)
-
-
-def _cluster_grid_edges(
-    value_range: tuple[float, float],
-    bin_size: float,
-) -> np.ndarray:
-    """Return grid-clustering bin edges for a configured domain."""
-    lo, hi = value_range
-    if bin_size <= 0:
-        raise ValueError(f"clustering bin_size must be > 0, got {bin_size!r}.")
-    return np.arange(lo, hi + bin_size, bin_size)
-
-
-def _state_com_grid_from_config(
-    pair: CoordinatePair,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
-    x_range: tuple[float, float],
-    y_range: tuple[float, float],
-    config: dict | None,
-) -> tuple[np.ndarray, np.ndarray, tuple[float, float], tuple[float, float]]:
-    """Return binning used for state COM markers.
-
-    Grid-clustered states are represented by the same grid that assigned the
-    states.  Non-grid clustering or density-only config falls back to the
-    visible density grid.
-    """
-    root_cfg = config or {}
-    clustering_cfg = root_cfg.get("clustering", {}) if "clustering" in root_cfg else {}
-    if str(clustering_cfg.get("algorithm", "grid")) != "grid":
-        return x_edges, y_edges, x_range, y_range
-
-    default_cfg = dict(clustering_cfg.get("default", {}) or {})
-    pair_cfg = dict(clustering_cfg.get(pair.name, {}) or {})
-    merged = {**default_cfg, **pair_cfg}
-    bin_size = merged.get("bin_size")
-    if bin_size is None:
-        return x_edges, y_edges, x_range, y_range
-
-    cluster_x_range = pair.x_domain
-    cluster_y_range = pair.y_domain
-    return (
-        _cluster_grid_edges(cluster_x_range, float(bin_size)),
-        _cluster_grid_edges(cluster_y_range, float(bin_size)),
-        cluster_x_range,
-        cluster_y_range,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -243,11 +95,14 @@ def make_density_png(
     Raises
     ------
     ValueError
-        If the feature columns are not found in ``df``.
+        If the feature columns are not found in ``df``, the density bins or
+        ranges are invalid, or ``clustering.groupby`` names a column missing
+        from ``df`` while the pair's state column is present.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    fig = _density_figure(df, pair, config=config, overlays=overlays)
+    conf_map = build_conformational_map(df, pair, DensitySettings.for_pair(pair, config))
+    fig = _density_figure(conf_map, groupby=resolve_state_groupby(config or {}), overlays=overlays)
     outpath = Path(outpath)
     outpath.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(outpath, dpi=dpi)
@@ -256,21 +111,21 @@ def make_density_png(
 
 
 def density_png_bytes(
-    df: pd.DataFrame,
-    pair: CoordinatePair,
+    conf_map: ConformationalMap,
     dpi: int,
-    config: dict | None = None,
+    groupby: Sequence[str] | None = None,
 ) -> bytes:
-    """Return the density figure of :func:`make_density_png` as PNG bytes.
+    """Return the density figure of :func:`make_density_png` for *conf_map* as PNG bytes.
 
     Same figure (bins, ranges, colour map, state markers), rendered in memory
-    at *dpi*; nothing is written to disk.
+    at *dpi*; nothing is written to disk. *groupby* names the columns states
+    were clustered by (see :func:`~confana.states.resolve_state_groupby`).
     """
     import io  # noqa: PLC0415
 
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    fig = _density_figure(df, pair, config=config)
+    fig = _density_figure(conf_map, groupby=groupby)
     buffer = io.BytesIO()
     fig.savefig(buffer, format="png", dpi=dpi)
     plt.close(fig)
@@ -278,77 +133,35 @@ def density_png_bytes(
 
 
 def _density_figure(
-    df: pd.DataFrame,
-    pair: CoordinatePair,
-    config: dict | None = None,
+    conf_map: ConformationalMap,
+    groupby: Sequence[str] | None = None,
     overlays: list[dict] | None = None,
 ):
     """Draw the density figure shared by :func:`make_density_png` and
-    :func:`density_png_bytes`; the caller saves and closes it."""
+    :func:`density_png_bytes`; the caller saves and closes it.
+
+    State markers are the state centres of the first clustering group, the
+    group the interactive page starts on; with several groups the title names
+    it, since state labels are not shared between groups.
+    """
     import matplotlib  # noqa: PLC0415
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    _, density_cfg = _split_density_config(config)
-
-    # Per-pair overrides take precedence over global density config.
-    bins: int = (
-        pair.bins if pair.bins is not None
-        else int(density_cfg.get("bins", 180))
-    )
-    colormap: str = (
-        pair.colormap if pair.colormap is not None
-        else str(density_cfg.get("colormap", "viridis"))
-    )
-    log_scale: bool = (
-        pair.log_scale if pair.log_scale is not None
-        else bool(density_cfg.get("log_scale", True))
-    )
-
-    # Axis ranges: per-pair override → global config → pair domain
-    raw_x_range = density_cfg.get("x_range")
-    raw_y_range = density_cfg.get("y_range")
-    x_range: tuple[float, float] = (
-        pair.x_range if pair.x_range is not None
-        else (tuple(raw_x_range) if raw_x_range is not None else pair.x_domain)
-    )
-    y_range: tuple[float, float] = (
-        pair.y_range if pair.y_range is not None
-        else (tuple(raw_y_range) if raw_y_range is not None else pair.y_domain)
-    )
-
-    # Feature columns account for any *_shifted variants.
+    pair, settings = conf_map.pair, conf_map.settings
     x_col, y_col = pair.feature_columns
-    for col in (x_col, y_col):
-        if col not in df.columns:
-            raise ValueError(
-                f"make_density_png: column '{col}' not found in DataFrame. "
-                f"Available columns: {list(df.columns)}"
-            )
 
-    mask = df[x_col].notna() & df[y_col].notna()
-    x_data = df.loc[mask, x_col].astype(float).to_numpy()
-    y_data = df.loc[mask, y_col].astype(float).to_numpy()
-
-    H, x_edges, y_edges = compute_2d_histogram_arrays(
-        x_data,
-        y_data,
-        bins=bins,
-        x_range=x_range,
-        y_range=y_range,
-    )
-
-    C = _prepare_density_values(H, log_scale=log_scale)
-    cbar_label = "log₁₀(count + 1)" if log_scale else "count"
+    C = _prepare_density_values(conf_map.counts, log_scale=settings.log_scale)
+    cbar_label = "log₁₀(count + 1)" if settings.log_scale else "count"
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    cmap = _prepare_density_colormap(colormap)
+    colormap = _prepare_density_colormap(settings.colormap)
 
     pcm = ax.pcolormesh(
-        x_edges,
-        y_edges,
+        conf_map.x_edges,
+        conf_map.y_edges,
         C,
-        cmap=cmap,
+        cmap=colormap,
         shading="flat",
     )
     cbar = fig.colorbar(pcm, ax=ax)
@@ -357,37 +170,19 @@ def _density_figure(
     ax.set_xlabel(pair.x_label)
     ax.set_ylabel(pair.y_label)
     ax.set_title(pair.title)
-    ax.set_xlim(x_range)
-    ax.set_ylim(y_range)
+    ax.set_xlim(settings.x_range)
+    ax.set_ylim(settings.y_range)
 
-    # Overlay state COM markers when the state column is present in df.
-    state_col = pair.state_col
-    if state_col in df.columns:
-        marker_x_edges, marker_y_edges, marker_x_range, marker_y_range = (
-            _state_com_grid_from_config(
-                pair,
-                x_edges,
-                y_edges,
-                x_range,
-                y_range,
-                config,
-            )
-        )
-        state_positions = _compute_state_bin_com_positions(
-            df,
-            state_col,
-            x_col,
-            y_col,
-            marker_x_edges,
-            marker_y_edges,
-            marker_x_range,
-            marker_y_range,
-            periodic=pair.periodic,
-        )
-        if len(state_positions) > 0:
+    states = build_bin_state_overlay(conf_map, groupby=groupby)
+    if states is not None and states["groups"]:
+        group = states["groups"][0]
+        if len(states["groups"]) > 1:
+            ax.set_title(f"{pair.title} — {group['name']}")
+        centres = group["centres"]
+        if centres:
             ax.scatter(
-                state_positions[x_col].astype(float),
-                state_positions[y_col].astype(float),
+                [c["x"] for c in centres],
+                [c["y"] for c in centres],
                 c="red",
                 s=80,
                 zorder=5,
@@ -395,10 +190,10 @@ def _density_figure(
                 linewidths=0.5,
                 edgecolors="white",
             )
-            for lbl, row in state_positions.iterrows():
+            for centre in centres:
                 ax.annotate(
-                    str(lbl),
-                    (float(row[x_col]), float(row[y_col])),
+                    states["labels"][centre["state"]],
+                    (centre["x"], centre["y"]),
                     textcoords="offset points",
                     xytext=(4, 4),
                     fontsize=7,

@@ -6,11 +6,12 @@
 - `confana/io_xyz.py`: streaming XYZ ingestion and indexed random access
 - `confana/io_coordinates.py`: coordinate-table ingestion and cache-aware loading
 - `confana/coordinates.py`: plane/dihedral coordinate extraction
+- `confana/density.py`: the conformational map of a coordinate pair (bins, counts, bin lookup, representative frames) and the population free-energy surface
 - `confana/states.py`: conformational state assignment
 - `confana/transitions.py`: transition counts, probabilities, optional rates, and optional activation barriers
 - `confana/plots_static.py`: PNG density and transition plots
 - `confana/plots_interactive.py`: standalone interactive HTML outputs
-- `confana/viewer.py`: nearest-structure lookup and structure rendering helpers
+- `confana/viewer.py`: reading and aligning the structures and metadata of each bin's representative frame
 - `confana/payload_codec.py`: compact encoding of the structures and metadata embedded in the HTML
 - `confana/cli.py`: command-line entrypoints
 - `configs/`: local workflow configurations ignored by git

@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from confana.coordinate_config import list_coordinate_pairs
+from confana.density import ConformationalMap
 from confana.models import CoordinatePair
 
 
@@ -598,18 +599,6 @@ def _natural_label_key(label: str) -> tuple[int, int, str]:
     return (0, int(label), "") if label.isdigit() else (1, 0, label)
 
 
-def _histogram_bin_indices(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
-    """Bin index per value as ``np.histogram2d`` assigns it; -1 outside the edges.
-
-    Bins are right-open except the last, which includes the right edge.
-    """
-    v = np.asarray(values, dtype=float)
-    idx = np.searchsorted(edges, v, side="right") - 1
-    idx[v == edges[-1]] = len(edges) - 2
-    idx[~np.isfinite(v) | (v < edges[0]) | (v > edges[-1])] = -1
-    return idx
-
-
 def _axis_centre(values: np.ndarray, periodic: bool) -> float:
     """Mean of *values* (degrees); circular mean when the axis is periodic."""
     if periodic:
@@ -628,13 +617,10 @@ def _state_group_name(keys: dict[str, Any]) -> str:
 
 
 def build_bin_state_overlay(
-    df: pd.DataFrame,
-    pair: CoordinatePair,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
+    conf_map: ConformationalMap,
     groupby: Sequence[str] | None = None,
 ) -> dict | None:
-    """Return the majority state of each histogram bin, one map per group.
+    """Return the majority state of each bin of *conf_map*, one map per group.
 
     States are clustered separately per ``groupby`` group and their labels
     are not unified across groups ("0" in one bead may be a different region
@@ -644,24 +630,21 @@ def build_bin_state_overlay(
     Within a group, each bin takes the label held by most of its frames.
     Noise and unset (NA) frames take part; when they win, the bin has no
     state. Ties go to a real state first, then to the earlier label in
-    natural order ("2" before "10"). Frames outside the edges are ignored,
-    with bins assigned exactly as :func:`np.histogram2d` assigns them.
+    natural order ("2" before "10"). Frames off the map are ignored, and
+    bins are assigned exactly as the map counts them.
 
     Parameters
     ----------
-    df:
-        Coordinate table with ``pair.feature_columns`` and ``pair.state_col``.
-    pair:
-        Coordinate pair; ``pair.periodic`` makes the centres circular means.
-    x_edges, y_edges:
-        Histogram bin edges of the density map.
+    conf_map:
+        Map of the coordinate pair. Its table holds the states in
+        ``pair.state_col``; ``pair.periodic`` makes the centres circular means.
     groupby:
         Columns the states were clustered by (see :func:`resolve_state_groupby`).
 
     Returns
     -------
     dict | None
-        ``None`` when ``pair.state_col`` is not in *df*. Otherwise::
+        ``None`` when ``pair.state_col`` is not in the map's table. Otherwise::
 
             {"state_col": str,
              "groupby": [str, ...],
@@ -680,26 +663,24 @@ def build_bin_state_overlay(
     Raises
     ------
     ValueError
-        If a ``groupby`` column or a feature column is missing from *df*.
+        If a ``groupby`` column is missing from the map's table.
     """
+    df, pair = conf_map.table, conf_map.pair
     state_col = pair.state_col
     if state_col not in df.columns:
         return None
 
     groupby_cols = _coerce_groupby(groupby) or []
-    x_col, y_col = pair.feature_columns
-    missing = [c for c in [x_col, y_col, *groupby_cols] if c not in df.columns]
+    missing = [c for c in groupby_cols if c not in df.columns]
     if missing:
         raise ValueError(
             f"build_bin_state_overlay: columns {missing} not found for pair '{pair.name}'."
         )
 
-    x_values = df[x_col].to_numpy(dtype=float)
-    y_values = df[y_col].to_numpy(dtype=float)
-    xi = _histogram_bin_indices(x_values, np.asarray(x_edges, dtype=float))
-    yi = _histogram_bin_indices(y_values, np.asarray(y_edges, dtype=float))
+    x_values, y_values = conf_map.frame_values()
+    xi, yi = conf_map.bin_index(x_values, y_values)
     inside = (xi >= 0) & (yi >= 0)
-    flat_bin = yi * (len(x_edges) - 1) + xi
+    flat_bin = yi * conf_map.counts.shape[0] + xi
 
     raw = df[state_col].astype("string")
     labelled = (raw.notna() & raw.ne(_NOISE_LABEL)).fillna(False).to_numpy(dtype=bool)

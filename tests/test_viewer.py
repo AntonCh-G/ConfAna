@@ -10,7 +10,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from confana.viewer import align_xyz_to_reference, build_bin_xyz_payloads, read_xyz_frame_text
+from confana.density import DensitySettings, build_conformational_map
+from confana.models import CoordinatePair
+from confana.viewer import (
+    align_xyz_to_reference,
+    build_bin_frame_metadata,
+    build_bin_xyz_payloads,
+    read_xyz_frame_text,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +195,17 @@ def test_align_xyz_to_reference_heavy_atom_sequence_mismatch_raises():
 # ---------------------------------------------------------------------------
 
 
+def _plane_map(df: pd.DataFrame, edges: np.ndarray):
+    """Map of the plane pair of *df* on the equal-width bins *edges* (both axes)."""
+    pair = CoordinatePair(
+        name="plane", x_col="carboxyl_plane", y_col="ester_plane",
+        x_label="x", y_label="y", title="t", x_domain=(0.0, 180.0), y_domain=(0.0, 180.0),
+    )
+    span = (float(edges[0]), float(edges[-1]))
+    settings = DensitySettings(bins=len(edges) - 1, x_range=span, y_range=span)
+    return build_conformational_map(df, pair, settings)
+
+
 def _make_df(n: int, tmp_xyz: Path, offsets: list[int], n_atoms: int = 2) -> pd.DataFrame:
     """Return a minimal coordinate DataFrame pointing to *tmp_xyz*."""
     rng = np.random.default_rng(0)
@@ -210,10 +228,9 @@ def test_build_bin_xyz_payloads_returns_dict(tmp_path):
     offsets = _write_xyz(xyz_file, frames)
 
     df = _make_df(10, xyz_file, offsets, n_atoms=n_atoms)
-    x_edges = np.linspace(0, 180, 7)
-    y_edges = np.linspace(0, 180, 7)
+    edges = np.linspace(0, 180, 7)
 
-    payloads = build_bin_xyz_payloads(df, "carboxyl_plane", "ester_plane", x_edges, y_edges)
+    payloads = build_bin_xyz_payloads(_plane_map(df, edges))
 
     assert isinstance(payloads, dict)
     assert len(payloads) > 0
@@ -228,10 +245,9 @@ def test_build_bin_xyz_payloads_empty_df():
     df = pd.DataFrame(
         columns=["carboxyl_plane", "ester_plane", "source_file", "byte_offset", "atom_count"]
     )
-    x_edges = np.linspace(0, 180, 5)
-    y_edges = np.linspace(0, 180, 5)
+    edges = np.linspace(0, 180, 5)
 
-    result = build_bin_xyz_payloads(df, "carboxyl_plane", "ester_plane", x_edges, y_edges)
+    result = build_bin_xyz_payloads(_plane_map(df, edges))
     assert result == {}
 
 
@@ -251,10 +267,9 @@ def test_build_bin_xyz_payloads_skips_missing_offset(tmp_path):
             "atom_count": [n_atoms, n_atoms],
         }
     )
-    x_edges = np.linspace(0, 180, 5)
-    y_edges = np.linspace(0, 180, 5)
+    edges = np.linspace(0, 180, 5)
 
-    payloads = build_bin_xyz_payloads(df, "carboxyl_plane", "ester_plane", x_edges, y_edges)
+    payloads = build_bin_xyz_payloads(_plane_map(df, edges))
     # Should still produce at least one payload (from the valid row)
     assert isinstance(payloads, dict)
 
@@ -262,11 +277,10 @@ def test_build_bin_xyz_payloads_skips_missing_offset(tmp_path):
 def test_build_bin_xyz_payloads_missing_columns_raises():
     """Raise ValueError when required columns are absent."""
     df = pd.DataFrame({"carboxyl_plane": [1.0], "ester_plane": [1.0]})
-    x_edges = np.linspace(0, 180, 5)
-    y_edges = np.linspace(0, 180, 5)
+    edges = np.linspace(0, 180, 5)
 
     with pytest.raises(ValueError, match="Missing columns"):
-        build_bin_xyz_payloads(df, "carboxyl_plane", "ester_plane", x_edges, y_edges)
+        build_bin_xyz_payloads(_plane_map(df, edges))
 
 
 def test_build_bin_xyz_payloads_unreadable_skipped(tmp_path):
@@ -280,10 +294,9 @@ def test_build_bin_xyz_payloads_unreadable_skipped(tmp_path):
             "atom_count": [2],
         }
     )
-    x_edges = np.linspace(0, 180, 5)
-    y_edges = np.linspace(0, 180, 5)
+    edges = np.linspace(0, 180, 5)
 
-    result = build_bin_xyz_payloads(df, "carboxyl_plane", "ester_plane", x_edges, y_edges)
+    result = build_bin_xyz_payloads(_plane_map(df, edges))
     assert result == {}
 
 
@@ -337,24 +350,14 @@ def test_build_bin_xyz_payloads_alignment_uses_earliest_reference(tmp_path, alig
             "atom_count": [len(symbols), len(symbols)],
         }
     )
-    x_edges = np.asarray([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
-    y_edges = np.asarray([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
+    edges = np.asarray([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
 
-    payloads = build_bin_xyz_payloads(
-        df,
-        "carboxyl_plane",
-        "ester_plane",
-        x_edges,
-        y_edges,
-        alignment=alignment,
-    )
+    payloads = build_bin_xyz_payloads(_plane_map(df, edges), alignment=alignment)
 
     _, aligned_coords = _parse_xyz_symbols_coords(payloads["1_1"])
     assert _rmsd(aligned_coords, reference_coords) < 1e-6
 
-    raw = build_bin_xyz_payloads(
-        df, "carboxyl_plane", "ester_plane", x_edges, y_edges, alignment={"enabled": False}
-    )
+    raw = build_bin_xyz_payloads(_plane_map(df, edges), alignment={"enabled": False})
     _, raw_coords = _parse_xyz_symbols_coords(raw["1_1"])
     assert _rmsd(raw_coords, target_coords) < 1e-6
 
@@ -391,11 +394,7 @@ def test_build_bin_xyz_payloads_alignment_keeps_atom_order(tmp_path):
     edges = np.asarray([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
 
     payloads = build_bin_xyz_payloads(
-        df,
-        "carboxyl_plane",
-        "ester_plane",
-        edges,
-        edges,
+        _plane_map(df, edges),
         alignment={"enabled": True, "reference": "earliest_frame", "atom_selection": "heavy"},
     )
 
@@ -403,3 +402,35 @@ def test_build_bin_xyz_payloads_alignment_keeps_atom_order(tmp_path):
     assert aligned_symbols == symbols
     # Atom i of the payload is atom i of the file, just moved rigidly.
     np.testing.assert_allclose(aligned_coords, reference_coords, atol=1e-6)
+
+
+def test_bin_structure_and_metadata_come_from_one_frame(tmp_path):
+    """A bin's structure and metadata both belong to its representative frame.
+
+    Bin 0_0 (centre 45, 45) is represented by frame 0, which has no structure
+    reference: the bin gets frame 0's metadata and no structure, never a
+    structure borrowed from frame 1 further from the centre.
+    """
+    xyz_file = tmp_path / "traj.xyz"
+    frame_a = ["2", "frame-a", "C 0.0 0.0 0.0", "C 1.0 0.0 0.0"]
+    frame_b = ["2", "frame-b", "C 0.0 0.0 0.0", "C 1.5 0.0 0.0"]
+    offsets = _write_xyz(xyz_file, [frame_a, frame_b])
+    df = pd.DataFrame(
+        {
+            "frame_id": [0, 1, 2],
+            "carboxyl_plane": [44.0, 10.0, 130.0],
+            "ester_plane": [44.0, 10.0, 130.0],
+            "source_file": [None, str(xyz_file), str(xyz_file)],
+            "byte_offset": [None, offsets[0], offsets[1]],
+            "atom_count": [2, 2, 2],
+        }
+    )
+    conf_map = _plane_map(df, np.linspace(0.0, 180.0, 3))
+
+    payloads = build_bin_xyz_payloads(conf_map, alignment={"enabled": False})
+    metadata = build_bin_frame_metadata(conf_map)
+
+    assert metadata["0_0"]["frame_id"] == 0
+    assert "0_0" not in payloads
+    assert metadata["1_1"]["frame_id"] == 2
+    assert payloads["1_1"].splitlines()[1] == "frame-b"

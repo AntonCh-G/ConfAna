@@ -414,7 +414,7 @@ def run_all(config: str, skip_transitions: bool) -> None:
     click.echo("[3/4] Assigning conformational states …")
     df = assign_conformer_states_from_config(df, cfg)
 
-    # Phase 8b — density PNGs with state COM markers
+    # Phase 8b — density PNGs with state markers (centres of the first clustering group)
     for pair_name, pair in pairs:
         make_density_png(
             df,

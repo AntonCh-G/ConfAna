@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import json
 import re
+from dataclasses import replace
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -353,6 +354,38 @@ def test_make_density_interactive_bin_payloads_precede_click_handler(tmp_path):
     assert page_data_idx != -1
     assert plotly_click_idx != -1
     assert page_data_idx < plotly_click_idx
+
+
+def test_page_representatives_are_exactly_the_counted_bins(tmp_path):
+    """Every bin with frames has a representative frame; no empty bin has one.
+
+    Frames off the map (-170, 181), on an interior edge (30, 60 go to the
+    upper bin) and on the right edge (180 goes to the last bin) are placed
+    exactly as the counts place them.
+    """
+    df = _make_angle_df(n=6)
+    df["carboxyl_plane"] = [-170.0, 30.0, 60.0, 180.0, 181.0, 95.0]
+    df["ester_plane"] = [10.0, 10.0, 10.0, 180.0, 10.0, 95.0]
+    outpath = tmp_path / "edges.html"
+
+    make_density_interactive(
+        df,
+        replace(_plane_pair(), bins=6),  # 30-degree bins
+        outpath,
+        config={"plots": {"interactive": {
+            "embed_xyz_payload": True, "compress_payloads": False, "include_plotlyjs": "cdn",
+        }}},
+    )
+
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    counted = {
+        f"{xi}_{yi}"
+        for yi, row in enumerate(data["scale"]["counts"])
+        for xi, count in enumerate(row)
+        if count
+    }
+    assert counted == {"1_0", "2_0", "3_3", "5_5"}
+    assert set(data["bin_frame_metadata"]) == counted
 
 
 def test_make_density_interactive_contains_comparison_tray(tmp_path):

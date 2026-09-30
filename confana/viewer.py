@@ -10,12 +10,13 @@ Design notes
 * ``read_xyz_frame_text`` returns the raw multi-line text of a single XYZ
   frame, suitable for direct embedding in the HTML or passing to 3Dmol.js
   ``viewer.addModel(text, 'xyz')``.
-* ``build_bin_xyz_payloads`` and ``build_bin_frame_metadata`` share a private
-  helper ``_find_bin_representatives`` that locates the frame closest to each
-  bin centre (one NumPy-based binning pass).  The JavaScript click handler
-  then only needs an O(1) key lookup instead of scanning all frames.
-* Rows missing required columns are silently skipped; the caller receives no
-  data for those bins.
+* ``build_bin_xyz_payloads`` and ``build_bin_frame_metadata`` both describe
+  each bin's representative frame, taken from
+  ``ConformationalMap.representatives``, so a bin's structure and metadata
+  are always the same frame.  The JavaScript click handler then only needs an
+  O(1) key lookup instead of scanning all frames.
+* A representative without a readable structure leaves its bin without one;
+  no structure is borrowed from another frame.
 
 Public API
 ----------
@@ -33,6 +34,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from confana.density import ConformationalMap
 
 
 # ---------------------------------------------------------------------------
@@ -283,98 +286,22 @@ _BIN_META_FIELDS = [
 ]
 
 
-def _find_bin_representatives(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
-    require_cols: list[str] | None = None,
-) -> tuple[pd.DataFrame, dict[tuple[int, int], int]]:
-    """Find the frame closest to each bin centre in 2D angle space.
-
-    Parameters
-    ----------
-    df:
-        Coordinate table.
-    x_col, y_col:
-        Columns used for bin assignment (must be non-NA).
-    x_edges, y_edges:
-        Bin edge arrays as returned by ``compute_2d_histogram``.
-    require_cols:
-        Additional columns that must be non-NA for a row to be eligible.
-        Rows failing this check are excluded from selection but do not raise.
-
-    Returns
-    -------
-    sub:
-        Filtered copy of *df* (rows with valid coordinates and require_cols).
-    bin_best:
-        ``{(xi, yi): iloc_position_in_sub}`` — integer position (not label)
-        of the representative row in *sub* for each occupied bin.
-    """
-    mask = df[x_col].notna() & df[y_col].notna()
-    for col in (require_cols or []):
-        if col in df.columns:
-            mask = mask & df[col].notna()
-
-    sub = df.loc[mask].reset_index(drop=True)
-    if sub.empty:
-        return sub, {}
-
-    x_vals = pd.to_numeric(sub[x_col], errors="coerce").to_numpy(dtype=np.float32)
-    y_vals = pd.to_numeric(sub[y_col], errors="coerce").to_numpy(dtype=np.float32)
-
-    n_x = len(x_edges) - 1
-    n_y = len(y_edges) - 1
-    x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
-    y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
-
-    xi_arr = np.clip(np.searchsorted(x_edges[1:], x_vals, side="left"), 0, n_x - 1)
-    yi_arr = np.clip(np.searchsorted(y_edges[1:], y_vals, side="left"), 0, n_y - 1)
-
-    bin_best: dict[tuple[int, int], int] = {}
-    bin_best_dist: dict[tuple[int, int], float] = {}
-    for i in range(len(sub)):
-        xi, yi = int(xi_arr[i]), int(yi_arr[i])
-        dx = float(x_vals[i]) - float(x_centres[xi])
-        dy = float(y_vals[i]) - float(y_centres[yi])
-        dist = dx * dx + dy * dy
-        key = (xi, yi)
-        if key not in bin_best_dist or dist < bin_best_dist[key]:
-            bin_best_dist[key] = dist
-            bin_best[key] = i
-
-    return sub, bin_best
-
-
 def build_bin_xyz_payloads(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
+    conf_map: ConformationalMap,
     alignment: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Pre-compute one representative XYZ structure per occupied histogram bin.
+    """Read the XYZ structure of each occupied bin's representative frame.
 
-    For each non-empty bin in the 2D grid defined by *x_edges* / *y_edges*,
-    finds the row of *df* whose ``(x_col, y_col)`` values are closest to the
-    bin centre (Euclidean distance in 2D), then reads that frame's XYZ text.
+    The representative is :attr:`ConformationalMap.representatives`, the same
+    frame :func:`build_bin_frame_metadata` describes. A representative without
+    a readable structure (no ``source_file`` / ``byte_offset`` / ``atom_count``
+    value, or a file that cannot be read) leaves its bin without a structure.
 
     Parameters
     ----------
-    df:
-        Standard coordinate table containing at least *x_col*, *y_col*,
-        ``source_file``, ``byte_offset``, and ``atom_count`` columns.
-    x_col:
-        Column name for the x-axis coordinate (e.g. ``"carboxyl_plane"``).
-    y_col:
-        Column name for the y-axis coordinate (e.g. ``"ester_plane"``).
-    x_edges:
-        Bin edge array for the x axis (shape ``(n_bins + 1,)``).
-    y_edges:
-        Bin edge array for the y axis (shape ``(n_bins + 1,)``).
+    conf_map:
+        Map of the coordinate pair; its table must have ``source_file``,
+        ``byte_offset`` and ``atom_count`` columns.
     alignment:
         Optional alignment config dict.  Alignment is on by default: payloads
         are rigidly aligned to the reference structure using the configured
@@ -386,15 +313,13 @@ def build_bin_xyz_payloads(
     dict[str, str]
         Mapping of ``"xi_yi"`` bin keys to XYZ text strings.
     """
-    required = [x_col, y_col, "source_file", "byte_offset", "atom_count"]
+    df = conf_map.table
+    required = ["source_file", "byte_offset", "atom_count"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in DataFrame: {missing}")
 
-    sub, bin_best = _find_bin_representatives(
-        df, x_col, y_col, x_edges, y_edges,
-        require_cols=["source_file", "byte_offset", "atom_count"],
-    )
+    bin_best = conf_map.representatives
     if not bin_best:
         return {}
 
@@ -403,16 +328,16 @@ def build_bin_xyz_payloads(
     alignment_reference = str(alignment_cfg.get("reference", "earliest_frame"))
     atom_selection = str(alignment_cfg.get("atom_selection", "heavy"))
 
-    source_files = sub["source_file"].to_numpy(dtype=object)
-    byte_offsets = pd.to_numeric(sub["byte_offset"], errors="coerce").to_numpy(dtype=np.int64)
-    atom_counts = pd.to_numeric(sub["atom_count"], errors="coerce").to_numpy(dtype=np.int64)
+    source_files = df["source_file"].to_numpy(dtype=object)
+    byte_offsets = pd.to_numeric(df["byte_offset"], errors="coerce").to_numpy(dtype=float)
+    atom_counts = pd.to_numeric(df["atom_count"], errors="coerce").to_numpy(dtype=float)
 
     payloads: dict[str, str] = {}
     for (xi, yi), i in bin_best.items():
         sf = source_files[i]
         bo = byte_offsets[i]
         ac = atom_counts[i]
-        if sf is None or pd.isna(bo) or pd.isna(ac):
+        if pd.isna(sf) or pd.isna(bo) or pd.isna(ac):
             continue
         try:
             text = read_xyz_frame_text(sf, int(bo), int(ac))
@@ -436,29 +361,21 @@ def build_bin_xyz_payloads(
 
 
 def build_bin_frame_metadata(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
+    conf_map: ConformationalMap,
     extra_fields: list[str] | None = None,
 ) -> dict[str, dict]:
-    """Pre-compute one representative frame metadata record per occupied bin.
+    """Return the metadata record of each occupied bin's representative frame.
 
-    Uses the same centroid-nearest-frame selection as ``build_bin_xyz_payloads``
-    but returns a lightweight metadata dict instead of XYZ text.  The result
-    can be embedded in the interactive HTML as ``bin-frame-metadata`` to avoid
-    serialising the entire per-frame coordinate table (which can reach GB scale
-    for large PIMD datasets).
+    The representative is :attr:`ConformationalMap.representatives`, the same
+    frame whose structure :func:`build_bin_xyz_payloads` reads. The result is
+    embedded in the interactive HTML as ``bin-frame-metadata`` instead of the
+    entire per-frame coordinate table (which can reach GB scale for large
+    PIMD datasets).
 
     Parameters
     ----------
-    df:
-        Standard coordinate table.
-    x_col, y_col:
-        Angle columns used for bin assignment.
-    x_edges, y_edges:
-        Bin edge arrays from ``compute_2d_histogram``.
+    conf_map:
+        Map of the coordinate pair.
     extra_fields:
         Optional additional columns to include in each metadata record.
 
@@ -469,20 +386,18 @@ def build_bin_frame_metadata(
         contains whichever fields from ``_BIN_META_FIELDS`` are present
         in *df*, with NA values replaced by ``None``.
     """
-    if x_col not in df.columns or y_col not in df.columns:
-        raise ValueError(f"Missing coordinate columns: {x_col!r}, {y_col!r}")
-
-    sub, bin_best = _find_bin_representatives(df, x_col, y_col, x_edges, y_edges)
+    df = conf_map.table
+    bin_best = conf_map.representatives
     if not bin_best:
         return {}
 
-    present_fields = [f for f in _BIN_META_FIELDS if f in sub.columns]
+    present_fields = [f for f in _BIN_META_FIELDS if f in df.columns]
     for field in extra_fields or []:
-        if field in sub.columns and field not in present_fields:
+        if field in df.columns and field not in present_fields:
             present_fields.append(field)
     result: dict[str, dict] = {}
     for (xi, yi), i in bin_best.items():
-        row = sub.iloc[i]
+        row = df.iloc[i]
         record: dict[str, Any] = {}
         for field in present_fields:
             val = row[field]

@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from confana.density import compute_2d_histogram
+from confana.density import DensitySettings, build_conformational_map
 from confana.models import CoordinatePair
 from confana.plots_static import (
-    _compute_state_bin_com_positions,
+    _density_figure,
     _prepare_density_colormap,
     _prepare_density_values,
-    _state_com_grid_from_config,
     make_density_png,
     make_transition_png,
 )
@@ -66,73 +66,118 @@ def _toy_pair() -> CoordinatePair:
 
 
 # ---------------------------------------------------------------------------
-# compute_2d_histogram
+# Conformational map
 # ---------------------------------------------------------------------------
 
 
-def test_compute_2d_histogram_shape():
-    df = _make_angle_df()
-    H, x_edges, y_edges = compute_2d_histogram(
-        df, "carboxyl_dihedral", "ester_dihedral", bins=50,
-        x_range=(-180, 180), y_range=(-180, 180),
+def _map_of(xs, ys, bins: int = 4, span: tuple[float, float] = (0.0, 120.0), **columns):
+    """Map of the toy pair over *span* on both axes (30° bins by default)."""
+    table = pd.DataFrame({"x": xs, "y": ys, **columns})
+    settings = DensitySettings(bins=bins, x_range=span, y_range=span)
+    return build_conformational_map(table, _toy_pair(), settings)
+
+
+def test_map_counts_only_frames_inside_the_map():
+    # -170 is off the map and NaN has no value; 30 and 60 sit on interior
+    # edges, which belong to the upper bin.
+    conf_map = _map_of([-170.0, 30.0, 60.0, np.nan], [10.0, 10.0, 10.0, 10.0])
+    np.testing.assert_allclose(conf_map.x_edges, [0.0, 30.0, 60.0, 90.0, 120.0])
+    np.testing.assert_array_equal(conf_map.counts[:, 0], [0, 1, 1, 0])
+    assert conf_map.counts.sum() == 2
+
+
+def test_map_bin_index_edges_follow_histogram_rule():
+    conf_map = _map_of([], [])
+    xi, yi = conf_map.bin_index(
+        np.array([0.0, 29.9, 30.0, 119.9, 120.0, -0.1, 120.1, np.nan]),
+        np.full(8, 45.0),
     )
-    assert H.shape == (50, 50)
-    assert len(x_edges) == 51
-    assert len(y_edges) == 51
+    # Interior edge -> upper bin; right edge -> last bin; off map or NaN -> -1.
+    np.testing.assert_array_equal(xi, [0, 0, 1, 3, 3, -1, -1, -1])
+    np.testing.assert_array_equal(yi, [1, 1, 1, 1, 1, 1, 1, 1])
 
 
-def test_compute_2d_histogram_counts_total():
-    df = _make_angle_df(n=200)
-    H, _, _ = compute_2d_histogram(
-        df, "carboxyl_dihedral", "ester_dihedral", bins=50,
-        x_range=(-180, 180), y_range=(-180, 180),
+def test_map_counts_agree_with_bin_index():
+    rng = np.random.default_rng(3)
+    x = rng.uniform(-20.0, 140.0, 400).round()  # rounding puts many values on edges
+    y = rng.uniform(-20.0, 140.0, 400).round()
+    conf_map = _map_of(x, y)
+    xi, yi = conf_map.bin_index(x, y)
+    inside = (xi >= 0) & (yi >= 0)
+    tally = np.zeros_like(conf_map.counts)
+    np.add.at(tally, (xi[inside], yi[inside]), 1)
+    np.testing.assert_array_equal(conf_map.counts, tally)
+
+
+def test_map_representatives_are_the_counted_bins():
+    # Frames at -170, 30 and 60 are counted in bins 1 and 2 only; an off-map
+    # frame must never represent a bin, and every counted bin gets one.
+    conf_map = _map_of([-170.0, 30.0, 60.0], [10.0, 10.0, 10.0])
+    assert conf_map.representatives == {(1, 0): 1, (2, 0): 2}
+
+
+def test_map_representative_is_nearest_to_bin_centre_ties_to_earliest_row():
+    # Bin (0, 0) spans 0-30 on both axes, centre (15, 15). Rows 1 and 2 are
+    # both 1 away from it; the earlier row wins, so the choice is deterministic.
+    conf_map = _map_of([2.0, 14.0, 16.0, 15.0], [15.0, 15.0, 15.0, 29.0])
+    assert conf_map.representatives == {(0, 0): 1}
+
+
+def test_map_every_representative_lies_in_its_own_bin():
+    rng = np.random.default_rng(4)
+    x = rng.uniform(-20.0, 140.0, 300).round()
+    y = rng.uniform(-20.0, 140.0, 300).round()
+    conf_map = _map_of(x, y)
+    reps = conf_map.representatives
+    assert set(reps) == {(int(i), int(j)) for i, j in zip(*np.nonzero(conf_map.counts))}
+    rows = np.array(list(reps.values()))
+    xi, yi = conf_map.bin_index(x[rows], y[rows])
+    assert list(zip(xi.tolist(), yi.tolist())) == list(reps)
+
+
+def test_map_of_empty_table_has_no_frames():
+    conf_map = _map_of([], [])
+    assert conf_map.counts.shape == (4, 4)
+    assert conf_map.counts.sum() == 0
+    assert conf_map.representatives == {}
+
+
+def test_density_settings_prefer_pair_then_config_then_domain():
+    config = {"plots": {"density": {
+        "bins": 20, "x_range": [0, 10], "y_range": [1, 39], "colormap": "magma", "log_scale": False,
+    }}}
+    pair = replace(_toy_pair(), bins=8, x_range=(5.0, 35.0))
+    assert DensitySettings.for_pair(pair, config) == DensitySettings(
+        bins=8, x_range=(5.0, 35.0), y_range=(1.0, 39.0), colormap="magma", log_scale=False,
     )
-    assert int(H.sum()) == len(df)
-
-
-def test_compute_2d_histogram_dihedral_range():
-    df = _make_angle_df()
-    H, x_edges, y_edges = compute_2d_histogram(
-        df, "carboxyl_dihedral", "ester_dihedral", bins=20,
-        x_range=(-180.0, 180.0), y_range=(-180.0, 180.0),
+    styled = replace(_toy_pair(), colormap="cividis", log_scale=True)
+    assert DensitySettings.for_pair(styled, config) == DensitySettings(
+        bins=20, x_range=(0.0, 10.0), y_range=(1.0, 39.0), colormap="cividis", log_scale=True,
     )
-    assert x_edges[0] == pytest.approx(-180.0)
-    assert x_edges[-1] == pytest.approx(180.0)
-
-
-def test_compute_2d_histogram_empty_df():
-    empty = pd.DataFrame({"carboxyl_dihedral": pd.Series([], dtype=float),
-                          "ester_dihedral": pd.Series([], dtype=float)})
-    H, x_edges, y_edges = compute_2d_histogram(
-        empty, "carboxyl_dihedral", "ester_dihedral", bins=10,
-        x_range=(-180, 180), y_range=(-180, 180),
+    # A density-only section is read the same way; unset keys fall back to
+    # the pair's domain and the defaults.
+    assert DensitySettings.for_pair(_toy_pair(), {"bins": 20}).bins == 20
+    assert DensitySettings.for_pair(_toy_pair()) == DensitySettings(
+        bins=180, x_range=(0.0, 40.0), y_range=(0.0, 40.0), colormap="viridis", log_scale=True,
     )
-    assert H.shape == (10, 10)
-    assert H.sum() == 0
 
 
-def test_compute_2d_histogram_na_rows_dropped():
-    df = _make_angle_df(n=10)
-    df.loc[0, "carboxyl_dihedral"] = float("nan")
-    df.loc[3, "ester_dihedral"] = float("nan")
-    H, _, _ = compute_2d_histogram(
-        df, "carboxyl_dihedral", "ester_dihedral", bins=10,
-        x_range=(-180, 180), y_range=(-180, 180),
-    )
-    assert int(H.sum()) == 8  # 10 - 2 NA rows
+@pytest.mark.parametrize(
+    "density",
+    [
+        {"bins": 0}, {"bins": 2.5}, {"bins": True}, {"bins": None},  # never rounded or guessed
+        {"x_range": [10, 10]}, {"y_range": [5, 1]}, {"x_range": [0, None]}, {"y_range": [1]},
+    ],
+)
+def test_density_settings_reject_bad_bins_and_ranges(density):
+    with pytest.raises(ValueError, match="pair 'toy'"):
+        DensitySettings.for_pair(_toy_pair(), {"plots": {"density": density}})
 
 
-def test_compute_2d_histogram_missing_column_raises():
-    df = _make_angle_df()
-    with pytest.raises(ValueError, match="not found"):
-        compute_2d_histogram(df, "nonexistent_col", "ester_dihedral", bins=10)
-
-
-def test_compute_2d_histogram_default_range():
-    """When x_range/y_range are None the data extent is used."""
-    df = pd.DataFrame({"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]})
-    H, x_edges, y_edges = compute_2d_histogram(df, "x", "y", bins=4)
-    assert H.sum() == 3
+def test_map_missing_column_raises():
+    settings = DensitySettings(bins=4, x_range=(0.0, 1.0), y_range=(0.0, 1.0))
+    with pytest.raises(ValueError, match=r"pair 'toy'.*'y'"):
+        build_conformational_map(pd.DataFrame({"x": [0.5]}), _toy_pair(), settings)
 
 
 # ---------------------------------------------------------------------------
@@ -240,77 +285,28 @@ def test_make_density_png_creates_parent_dirs(tmp_path):
     assert nested.exists()
 
 
-def test_state_bin_com_positions_use_population_weighted_bin_centres():
-    df = pd.DataFrame(
-        {
-            "carboxyl_dihedral": [0.1] * 9 + [19.9] + [5.0],
-            "ester_dihedral": [0.1] * 9 + [19.9] + [5.0],
-            "state_dihedral": ["0"] * 10 + ["noise"],
-        }
-    )
-    edges = np.array([0.0, 10.0, 20.0])
+def test_density_png_markers_are_the_first_groups_state_centres():
+    # Label "0" is a different region in each bead: the PNG shows bead 00's
+    # centre (the group the interactive page starts on), never a pooled one.
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PathCollection
 
-    positions = _compute_state_bin_com_positions(
-        df,
-        "state_dihedral",
-        "carboxyl_dihedral",
-        "ester_dihedral",
-        edges,
-        edges,
-        (0.0, 20.0),
-        (0.0, 20.0),
-        periodic=False,
-    )
-
-    assert positions.loc["0", "carboxyl_dihedral"] == pytest.approx(6.0)
-    assert positions.loc["0", "ester_dihedral"] == pytest.approx(6.0)
-
-
-def test_state_bin_com_positions_use_circular_mean_for_periodic_axes():
-    df = pd.DataFrame(
-        {
-            "carboxyl_dihedral": [-175.0, 175.0],
-            "ester_dihedral": [0.0, 0.0],
-            "state_dihedral": ["0", "0"],
-        }
-    )
-
-    positions = _compute_state_bin_com_positions(
-        df,
-        "state_dihedral",
-        "carboxyl_dihedral",
-        "ester_dihedral",
-        np.array([-180.0, -170.0, 170.0, 180.0]),
-        np.array([-180.0, 180.0]),
-        (-180.0, 180.0),
-        (-180.0, 180.0),
-        periodic=True,
-    )
-
-    assert positions.loc["0", "carboxyl_dihedral"] == pytest.approx(-180.0)
-    assert positions.loc["0", "ester_dihedral"] == pytest.approx(0.0)
-
-
-def test_state_com_grid_from_config_prefers_clustering_bins_over_density_bins():
-    density_edges = np.array([0.0, 10.0, 20.0, 30.0, 40.0])
-    x_edges, y_edges, x_range, y_range = _state_com_grid_from_config(
-        _toy_pair(),
-        density_edges,
-        density_edges,
-        (0.0, 40.0),
-        (0.0, 40.0),
-        {
-            "clustering": {
-                "algorithm": "grid",
-                "default": {"bin_size": 20.0, "min_count": 1},
-            }
-        },
-    )
-
-    np.testing.assert_allclose(x_edges, np.array([0.0, 20.0, 40.0]))
-    np.testing.assert_allclose(y_edges, np.array([0.0, 20.0, 40.0]))
-    assert x_range == (0.0, 40.0)
-    assert y_range == (0.0, 40.0)
+    table = pd.DataFrame({
+        "x": [5.0, 7.0, 35.0, 33.0],
+        "y": [5.0, 7.0, 35.0, 33.0],
+        "state_toy": ["0", "0", "0", "0"],
+        "bead_id": ["00", "00", "01", "01"],
+    })
+    settings = DensitySettings.for_pair(_toy_pair(), {"bins": 4})
+    fig = _density_figure(build_conformational_map(table, _toy_pair(), settings), groupby=["bead_id"])
+    try:
+        ax = fig.axes[0]
+        (markers,) = [c for c in ax.collections if isinstance(c, PathCollection)]
+        np.testing.assert_allclose(markers.get_offsets(), [[6.0, 6.0]])
+        assert [t.get_text() for t in ax.texts] == ["0"]
+        assert ax.get_title() == "toy density — bead 00"
+    finally:
+        plt.close(fig)
 
 
 def test_prepare_density_values_masks_unsampled_bins():
