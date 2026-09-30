@@ -20,6 +20,7 @@ $inline_css
         <span id="hdr-scale-mode"></span>
       </span>
       <nav id="pair-nav" class="ca-pair-nav" aria-label="Coordinate pairs" hidden></nav>
+      <button id="controls-toggle" type="button" class="ca-btn ca-controls-toggle" aria-expanded="false">Controls</button>
     </div>
     <div class="ca-header-sub">
       <span class="ca-subtitle-stack"><span id="hdr-subtitle" class="ca-subtitle">$subtitle</span></span>
@@ -51,7 +52,10 @@ $plot_fragment
         <div id="preview-viewer" class="ca-preview-viewer"></div>
       </section>
       <section id="preview-metadata" class="ca-preview-meta" hidden>
-        <div id="preview-status" class="ca-preview-status">Hover over the map to preview a bin</div>
+        <div class="ca-preview-head">
+          <div id="preview-status" class="ca-preview-status">Hover over the map to preview a bin</div>
+          <button id="preview-pin" type="button" class="ca-btn" hidden>Pin</button>
+        </div>
         <div id="preview-readout" class="ca-readout"></div>
         <details class="ca-more">
           <summary>More info</summary>

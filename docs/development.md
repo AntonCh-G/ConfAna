@@ -27,7 +27,8 @@ The repository includes tests for geometry, XYZ ingestion, coordinate-table load
 
 `tests/test_interactive_browser.py` opens generated HTML pages in headless Chromium,
 offline, and drives them with real mouse and keyboard input (hover preview, pinning,
-double-click, Esc, theme toggle). A few tests also run in Firefox, where 3Dmol behaves
+double-click, Esc, theme toggle). Others open the pages as an emulated phone (390 px wide,
+touch, no hover) and tap and swipe. A few tests also run in Firefox, where 3Dmol behaves
 differently. It needs a one-off browser install:
 
 ```bash

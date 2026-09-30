@@ -110,6 +110,7 @@ def pages(tmp_path_factory) -> dict[str, Path]:
         # Slice 7: the same page with the plain-JSON blocks instead.
         "plain": {"embed_xyz_payload": True, "compress_payloads": False},
         "plain_frame": {"embed_xyz_payload": False, "compress_payloads": False},
+        "no_preview": {"embed_xyz_payload": True, "hover_preview": False},
     }
     out = {}
     for name, interactive in variants.items():
@@ -242,20 +243,35 @@ def firefox(playwright):
     browser.close()
 
 
+# Browser windows the pages are opened in. The phone is an iPhone 13's page
+# area: touch, no hover (Chromium then reports `(hover: none)`, as a real
+# phone does), and the page is laid out at its own width.
+_DESKTOP = {"viewport": {"width": 1400, "height": 900}}
+_PHONE = {"viewport": {"width": 390, "height": 664}, "has_touch": True, "is_mobile": True}
+# A narrow desktop window: narrow layout, but a mouse.
+_NARROW_DESKTOP = {"viewport": {"width": 800, "height": 900}}
+
+
 class _Page:
     """One offline page, with helpers to find bins and read the side panel."""
 
-    def __init__(self, browser, path: Path, init_script: str | None = None):
-        self.context = browser.new_context(viewport={"width": 1400, "height": 900}, offline=True)
+    def __init__(
+        self, browser, path: Path, init_script: str | None = None, window: dict | None = None
+    ):
+        self.context = browser.new_context(**(window or _DESKTOP), offline=True)
         if init_script:
             self.context.add_init_script(init_script)
         self.page = self.context.new_page()
         self.errors: list[str] = []
         self.page.on("pageerror", lambda exc: self.errors.append(str(exc)))
         self.page.goto(path.as_uri())
+        # Drawn, and at its final size: on a narrow screen the page shrinks
+        # the map right after load, and bin positions read before that
+        # redraw ends would be off.
         self.page.wait_for_function(
             "() => { const gd = document.getElementsByClassName('plotly-graph-div')[0];"
-            " return gd && gd._fullLayout && gd._fullLayout._size; }"
+            " return gd && gd._fullLayout && gd._fullLayout._size"
+            " && Math.round(gd.getBoundingClientRect().width) === gd._fullLayout.width; }"
         )
 
     def bins(self) -> dict[str, list[dict]]:
@@ -493,11 +509,21 @@ def open_firefox_page(firefox):
     yield from _page_opener(firefox)
 
 
-def _page_opener(browser):
+@pytest.fixture
+def open_phone_page(browser):
+    yield from _page_opener(browser, _PHONE)
+
+
+@pytest.fixture
+def open_narrow_page(browser):
+    yield from _page_opener(browser, _NARROW_DESKTOP)
+
+
+def _page_opener(browser, window: dict | None = None):
     opened: list[_Page] = []
 
     def _open(path: Path, init_script: str | None = None) -> _Page:
-        page = _Page(browser, path, init_script=init_script)
+        page = _Page(browser, path, init_script=init_script, window=window)
         opened.append(page)
         return page
 
@@ -1322,9 +1348,14 @@ def test_browser_without_decompression_stream_says_so(open_page, pages):
 # ---------------------------------------------------------------------------
 
 
-def _bin_of(x: float, y: float, lo: float = -180.0, width: float = 30.0) -> str:
+# The fixtures' dihedral map: 12 bins of 30° from -180° on both axes.
+_BIN_LO = -180.0
+_BIN_WIDTH = 30.0
+
+
+def _bin_of(x: float, y: float) -> str:
     """Bin key of a point on the 12-bin dihedral map of these fixtures."""
-    return f"{int((x - lo) // width)}_{int((y - lo) // width)}"
+    return f"{int((x - _BIN_LO) // _BIN_WIDTH)}_{int((y - _BIN_LO) // _BIN_WIDTH)}"
 
 
 _HAS_PIN_1 = (
@@ -1536,4 +1567,472 @@ def test_carried_pin_without_a_value_keeps_its_card_but_no_marker(open_page, pag
         "Not on this map (no partial_dof value)"
     )
     assert page.pin_marks() == [] and page.pin_shapes() == []
+    assert page.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Phones: narrow layout (below 900 px) and touch (no hover)
+# ---------------------------------------------------------------------------
+
+
+def _column(page) -> dict:
+    """Top and bottom of the map and the panel sections, and which boxes scroll up and down."""
+    return page.page.evaluate(
+        """() => {
+          const box = (sel) => {
+            const r = document.querySelector(sel).getBoundingClientRect();
+            return {top: Math.round(r.top), bottom: Math.round(r.bottom)};
+          };
+          const ownScroll = (sel) => {
+            const el = document.querySelector(sel);
+            return el.scrollHeight > el.clientHeight + 1;
+          };
+          return {
+            map: box('.plotly-graph-div'),
+            values: box('#preview-metadata'),
+            viewer: box('#preview-3d'),
+            legend: box('#axis-legend'),
+            scrolling: ['.ca-app', '.ca-layout', '.ca-map', '.ca-panel'].filter(ownScroll),
+            mapRight: Math.round(document.querySelector('.plotly-graph-div').getBoundingClientRect().right),
+            pageWidth: document.scrollingElement.scrollWidth,
+            pageHeight: document.scrollingElement.scrollHeight,
+            screenWidth: window.innerWidth,
+            screenHeight: window.innerHeight,
+          };
+        }"""
+    )
+
+
+def test_phone_page_is_one_scrolling_column_with_the_preview_under_the_map(open_phone_page, pages):
+    page = open_phone_page(pages["highlight"])
+    column = _column(page)
+    # The page fits the phone's width: the browser did not zoom it out to fit
+    # something wider, and nothing sticks out sideways.
+    assert column["screenWidth"] == _PHONE["viewport"]["width"]
+    assert column["pageWidth"] <= column["screenWidth"]
+    assert column["mapRight"] <= column["screenWidth"]
+    # Nothing scrolls on its own: the page is taller than the screen and
+    # scrolls as a whole.
+    assert column["scrolling"] == []
+    assert column["pageHeight"] > column["screenHeight"]
+    # Under the map: the preview's values, its 3D view, then the atom legend.
+    assert column["map"]["bottom"] <= column["values"]["top"]
+    assert column["values"]["bottom"] <= column["viewer"]["top"]
+    assert column["viewer"]["bottom"] <= column["legend"]["top"]
+    assert page.errors == []
+
+
+def _header(page) -> dict:
+    """What the header shows: its height, the Controls button and which parts are on screen."""
+    return page.page.evaluate(
+        """() => {
+          const shown = (sel) => {
+            const el = document.querySelector(sel);
+            return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+          };
+          const toggle = document.getElementById('controls-toggle');
+          return {
+            height: Math.round(document.querySelector('.ca-header').getBoundingClientRect().height),
+            mapTop: Math.round(document.querySelector('.plotly-graph-div').getBoundingClientRect().top),
+            toggle: shown('#controls-toggle') ? toggle.textContent : null,
+            expanded: toggle.getAttribute('aria-expanded'),
+            shown: ['#hdr-title', '#hdr-subtitle', '.ca-header-stats', '#scale-controls',
+                    '#states-toggle', '#theme-toggle'].filter(shown),
+          };
+        }"""
+    )
+
+
+def test_phone_header_keeps_the_controls_behind_a_button_that_names_them(open_phone_page, pages):
+    page = open_phone_page(pages["states"])
+    closed = _header(page)
+    # Title and the "not a potential energy surface" note stay on screen; the
+    # controls wait behind one button that says what is set now.
+    assert closed["shown"] == ["#hdr-title", "#hdr-subtitle"]
+    assert closed["toggle"] == "Controls · log counts · states off"
+    assert closed["expanded"] == "false"
+    assert closed["height"] < 100
+
+    # It opens in place: the map moves down, nothing covers it.
+    page.page.tap("#controls-toggle")
+    opened = _header(page)
+    assert opened["expanded"] == "true"
+    assert opened["shown"] == ["#hdr-title", "#hdr-subtitle", ".ca-header-stats",
+                               "#scale-controls", "#states-toggle", "#theme-toggle"]
+    assert opened["mapTop"] > closed["mapTop"]
+
+    # It stays open while settings change, and the button follows them.
+    page.page.tap('[data-scale="counts"]')
+    page.wait_until("document.getElementById('controls-toggle').textContent.includes('· counts ·')")
+    page.page.tap("#states-toggle")
+    page.wait_until("document.getElementById('controls-toggle').textContent.endsWith('states on')")
+    assert _header(page)["toggle"] == "Controls · counts · states on"
+    assert _header(page)["expanded"] == "true"
+
+    page.page.tap("#controls-toggle")
+    assert _header(page)["shown"] == ["#hdr-title", "#hdr-subtitle"]
+    assert page.errors == []
+
+
+def _figure(page) -> dict:
+    return page.page.evaluate(
+        """() => {
+          const gd = document.getElementsByClassName('plotly-graph-div')[0];
+          const r = gd.getBoundingClientRect();
+          return {width: gd.layout.width, height: gd.layout.height,
+                  box: [Math.round(r.width), Math.round(r.height)],
+                  title: (gd.layout.title || {}).text || ''};
+        }"""
+    )
+
+
+def test_phone_map_fills_the_column_in_the_desktop_shape_and_is_restored_when_wide(
+    open_phone_page, pages
+):
+    page = open_phone_page(pages["bin"])
+    phone = _figure(page)
+    # The column is the screen less the map's 8 px padding on each side.
+    assert phone["width"] == _PHONE["viewport"]["width"] - 16
+    assert phone["height"] == round(phone["width"] * 600 / 700)
+    assert phone["box"] == [phone["width"], phone["height"]]
+    # The header names the map already.
+    assert phone["title"] == ""
+
+    page.page.set_viewport_size(_DESKTOP["viewport"])
+    page.wait_until("document.getElementsByClassName('plotly-graph-div')[0].layout.width === 700")
+    assert _figure(page) == {"width": 700, "height": 600, "box": [700, 600], "title": "Dihedral density"}
+    assert page.errors == []
+
+
+def test_narrow_window_with_a_mouse_previews_on_hover_and_pins_on_click_in_place(
+    open_narrow_page, pages
+):
+    page = open_narrow_page(pages["bin"])
+    assert page.page.is_visible("#controls-toggle")
+    # Wide enough for the map at its full size.
+    assert _figure(page)["width"] == 700
+    bins = page.bins()["full"]
+
+    page.hover(bins[0])
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {bins[0]['key']}'")
+    assert page.state()["status"] == f"Bin {bins[0]['key']}"
+
+    # Clicking pins, and the page stays where the reader is looking.
+    page.click(bins[1])
+    page.card_count_is(1)
+    page.page.wait_for_timeout(600)  # a smooth scroll would be under way by now
+    assert page.state()["pins"] == [[1, bins[1]["key"]]]
+    assert page.page.evaluate("window.scrollY") == 0
+    assert page.errors == []
+
+
+def _tap(page, point: dict) -> None:
+    page.page.touchscreen.tap(point["x"], point["y"])
+
+
+def _bin_edges(key: str) -> dict:
+    """Edges of a bin on the 12-bin dihedral map of these fixtures."""
+    xi, yi = (int(v) for v in key.split("_"))
+    x0, y0 = _BIN_LO + _BIN_WIDTH * xi, _BIN_LO + _BIN_WIDTH * yi
+    return {"x0": x0, "x1": x0 + _BIN_WIDTH, "y0": y0, "y1": y0 + _BIN_WIDTH}
+
+
+def _preview_marks(page) -> list[dict]:
+    return [
+        {k: s[k] for k in ("x0", "x1", "y0", "y1")}
+        for s in page.pin_shapes() if s["name"] == "preview"
+    ]
+
+
+def _tooltips_on_screen(page) -> int:
+    return page.page.evaluate(
+        "[...document.querySelectorAll('.hovertext')].filter((el) => el.getClientRects().length).length"
+    )
+
+
+def test_phone_tap_previews_the_bin_and_marks_it_instead_of_pinning(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    page.wait_until("document.getElementById('preview-status').textContent.startsWith('Tap')")
+    assert page.state()["status"] == "Tap a bin to preview it"
+    bins = page.bins()
+
+    first = bins["full"][0]
+    _tap(page, first)
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {first['key']}'")
+    state = page.state()
+    assert state["status"] == f"Bin {first['key']}"
+    assert state["previewCanvas"]
+    # A tap is a preview, not a pin.
+    assert state["cards"] == [] and page.pin_marks() == []
+    # The map shows which bin the finger landed on; there is no tooltip box.
+    page.wait_until("(document.getElementsByClassName('plotly-graph-div')[0].layout.shapes || []).length > 0")
+    marks = _preview_marks(page)
+    assert marks and all(mark == _bin_edges(first["key"]) for mark in marks)
+    assert _tooltips_on_screen(page) == 0
+
+    # The next tap replaces the preview and moves the mark, even to an empty bin.
+    empty = bins["empty"][0]
+    _tap(page, empty)
+    page.wait_until("document.getElementById('preview-status').textContent.startsWith('No frames')")
+    assert page.state()["status"] == f"No frames in this bin — showing bin {first['key']}"
+    marks = _preview_marks(page)
+    assert marks and all(mark == _bin_edges(empty["key"]) for mark in marks)
+    assert page.state()["cards"] == []
+    assert page.errors == []
+
+
+def _pin_button(page) -> str | None:
+    """The Pin button's text, or None when it is not on screen."""
+    return page.page.evaluate(
+        """() => { const b = document.getElementById('preview-pin');
+                   return b && b.getClientRects().length ? b.textContent : null; }"""
+    )
+
+
+def _tap_bin(page, point: dict) -> None:
+    _tap(page, point)
+    page.wait_until(
+        f"document.getElementById('preview-status').textContent === 'Bin {point['key']}'"
+    )
+
+
+def test_phone_pin_button_pins_the_previewed_frame_in_place(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    bins = page.bins()["full"]
+    assert _pin_button(page) is None
+
+    _tap_bin(page, bins[0])
+    assert _pin_button(page) == "Pin"
+    page.page.tap("#preview-pin")
+    page.card_count_is(1)
+    page.page.wait_for_timeout(600)  # a smooth scroll would be under way by now
+    assert page.state()["pins"] == [[1, bins[0]["key"]]]
+    assert [m["name"] for m in page.pin_marks()] == ["pin-1"]
+    assert _pin_button(page) == "Pinned · 1"
+    # The page stays on the map.
+    assert page.page.evaluate("window.scrollY") == 0
+
+    # The button follows the preview: a new bin can be pinned, and coming
+    # back to a pinned one says so.
+    _tap_bin(page, bins[1])
+    assert _pin_button(page) == "Pin"
+    # Low and left in the bin: the pin's badge sits up and right of its
+    # frame, and at phone size it can cover the bin centre (a tap on the
+    # badge opens the card instead).
+    _tap_bin(page, {**bins[0], "x": bins[0]["x"] - 4, "y": bins[0]["y"] + 4})
+    assert _pin_button(page) == "Pinned · 1"
+
+    # Closing the pin frees the bin again.
+    page.card(1).get_by_role("button", name="Close").tap()
+    page.card_count_is(0)
+    assert _pin_button(page) == "Pin"
+
+    # An empty bin has nothing to pin.
+    _tap(page, page.bins()["empty"][0])
+    page.wait_until("document.getElementById('preview-status').textContent.startsWith('No frames')")
+    assert _pin_button(page) is None
+    assert page.errors == []
+
+
+def test_phone_pin_button_pins_the_nearest_frame_in_per_frame_mode(open_phone_page, pages):
+    page = open_phone_page(pages["frame"])
+    target = page.bins()["full"][0]
+    _tap(page, target)
+    page.wait_until("document.getElementById('preview-status').textContent.startsWith('Press Pin')")
+    assert page.state()["status"] == "Press Pin to pin the nearest frame"
+    assert page.state()["cards"] == []
+    page.page.tap("#preview-pin")
+    page.card_count_is(1)
+    assert page.state()["pins"] == [[1, target["key"]]]
+    assert _pin_button(page) == "Pinned · 1"
+    assert page.errors == []
+
+
+def _swipe_up(page, selector: str, distance: int = 150) -> None:
+    """A finger swipe that starts on the element at *selector*, as when scrolling down.
+
+    It starts in the middle of the part of the element that is on screen.
+    """
+    box = page.page.locator(selector).bounding_box()
+    screen_height = page.page.viewport_size["height"]
+    top, bottom = max(box["y"], 0), min(box["y"] + box["height"], screen_height)
+    cdp = page.context.new_cdp_session(page.page)
+    cdp.send("Input.synthesizeScrollGesture", {
+        "x": box["x"] + box["width"] / 2, "y": (top + bottom) / 2,
+        "yDistance": -distance, "gestureSourceType": "touch", "speed": 800,
+    })
+    page.page.wait_for_timeout(300)
+
+
+def _axis_ranges(page) -> list:
+    return page.page.evaluate(
+        "(() => { const fl = document.getElementsByClassName('plotly-graph-div')[0]._fullLayout;"
+        " return [fl.xaxis.range, fl.yaxis.range]; })()"
+    )
+
+
+def test_phone_swipe_on_the_map_scrolls_the_page_and_never_zooms(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    ranges = _axis_ranges(page)
+    _swipe_up(page, ".nsewdrag")
+    assert page.page.evaluate("window.scrollY") > 0
+    assert _axis_ranges(page) == ranges
+    # No zoom or pan tools either: the map does not zoom on touch screens.
+    assert not page.page.locator(".modebar").is_visible()
+    assert page.errors == []
+
+
+def test_phone_double_tap_is_two_previews_and_keeps_the_pins(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    bins = page.bins()["full"]
+    for point in bins[:2]:
+        _tap_bin(page, point)
+        page.page.tap("#preview-pin")
+    page.card_count_is(2)
+
+    target = bins[2]
+    page.page.touchscreen.tap(target["x"], target["y"])
+    page.page.touchscreen.tap(target["x"], target["y"])
+    page.wait_until(f"document.getElementById('preview-status').textContent === 'Bin {target['key']}'")
+    page.page.wait_for_timeout(300)
+    assert page.state()["status"] == f"Bin {target['key']}"
+    assert len(page.state()["cards"]) == 2
+    assert page.errors == []
+
+
+def test_phone_tap_on_a_pin_badge_shows_its_card_and_keeps_the_preview(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    bins = page.bins()["full"]
+    _tap_bin(page, bins[0])
+    page.page.tap("#preview-pin")
+    page.card_count_is(1)
+    _tap_bin(page, bins[-1])
+
+    badge = page.page.evaluate(
+        """() => { const a = [...document.querySelectorAll('.annotation')].pop().getBoundingClientRect();
+                   return {x: a.x + a.width / 2, y: a.y + a.height / 2}; }"""
+    )
+    _tap(page, badge)
+    page.wait_until("window.scrollY > 0")
+    # Tapping the badge is asking for the card: the page scrolls to it.
+    assert page.page.evaluate("window.scrollY") > 0
+    assert page.state()["status"] == f"Bin {bins[-1]['key']}"
+    assert len(page.state()["cards"]) == 1
+    assert page.errors == []
+
+
+def _lock(page, selector: str) -> dict:
+    """Whether the 3D view at *selector* shows its cover or its Done button."""
+    return page.page.evaluate(
+        """(sel) => {
+          const el = document.querySelector(sel);
+          const shown = (c) => { const x = el.querySelector(c); return !!x && x.getClientRects().length > 0; };
+          return {cover: shown('.ca-3d-cover'), done: shown('.ca-3d-done')};
+        }""",
+        selector,
+    )
+
+
+def test_phone_3d_view_is_locked_until_tapped_so_swipes_scroll_the_page(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    _tap_bin(page, page.bins()["full"][0])
+    view = "#preview-viewer"
+    page.wait_until("!!document.querySelector('#preview-viewer canvas')")
+    assert _lock(page, view) == {"cover": True, "done": False}
+    assert "Tap to rotate" in page.page.locator(f"{view} .ca-3d-cover").inner_text()
+
+    # Locked: a swipe over the view scrolls the page and leaves the molecule.
+    camera = page.camera(view)
+    _swipe_up(page, view, distance=60)
+    assert page.page.evaluate("window.scrollY") > 0
+    assert page.camera(view) == camera
+
+    # Unlocked: the same swipe turns the molecule, and the page stays put.
+    page.page.tap(f"{view} .ca-3d-cover")
+    assert _lock(page, view) == {"cover": False, "done": True}
+    scrolled = page.page.evaluate("window.scrollY")
+    _swipe_up(page, view, distance=60)
+    assert page.camera(view) != camera
+    assert page.page.evaluate("window.scrollY") == scrolled
+
+    # Done locks it again, and so does a tap anywhere else.
+    page.page.tap(f"{view} .ca-3d-done")
+    assert _lock(page, view) == {"cover": True, "done": False}
+    page.page.tap(f"{view} .ca-3d-cover")
+    page.page.tap("#hdr-title")
+    assert _lock(page, view) == {"cover": True, "done": False}
+    assert page.errors == []
+
+
+def test_desktop_3d_views_have_no_lock(open_page, pages):
+    page = open_page(pages["bin"])
+    page.click(page.bins()["full"][0])
+    page.card_count_is(1)
+    assert _lock(page, "#preview-viewer") == {"cover": False, "done": False}
+    assert _lock(page, "#comparison-cards .comparison-viewer") == {"cover": False, "done": False}
+    assert page.errors == []
+
+
+def test_phone_without_a_preview_one_tap_pins_once_in_place(open_phone_page, pages):
+    # hover_preview: false has no preview to show, so a tap pins, as a click
+    # does; the page still stays on the map.
+    page = open_phone_page(pages["no_preview"])
+    target = page.bins()["full"][0]
+    _tap(page, target)
+    page.card_count_is(1)
+    page.page.wait_for_timeout(600)  # a smooth scroll would be under way by now
+    assert page.state()["pins"] == [[1, target["key"]]]
+    assert page.page.evaluate("window.scrollY") == 0
+    assert page.errors == []
+
+
+def test_phone_per_frame_empty_bin_has_nothing_to_pin(open_phone_page, pages):
+    page = open_phone_page(pages["frame"])
+    _tap(page, page.bins()["empty"][0])
+    page.wait_until("document.getElementById('preview-status').textContent === 'No frames in this bin'")
+    assert page.state()["status"] == "No frames in this bin"
+    assert _pin_button(page) is None
+    assert page.errors == []
+
+
+def test_phone_has_no_card_hover_effects(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    bins = page.bins()["full"]
+    for point in bins[:2]:
+        _tap_bin(page, point)
+        page.page.tap("#preview-pin")
+    page.card_count_is(2)
+
+    # A tap on a card is not a hover: the other badges keep full strength.
+    page.card(1).locator(".ca-card-title").tap()
+    page.page.wait_for_timeout(200)
+    assert [m["opacity"] for m in page.pin_marks()] == [1, 1]
+    # Previewing a pinned bin does not outline its card.
+    _tap_bin(page, {**bins[0], "x": bins[0]["x"] - 4, "y": bins[0]["y"] + 4})
+    assert page.page.locator(".ca-card-linked").count() == 0
+    assert page.errors == []
+
+
+def test_phone_pin_limit_notice_shows_on_screen(open_phone_page, pages):
+    page = open_phone_page(pages["bin"])
+    for point in page.bins()["full"][: _MAX_PINNED + 1]:
+        _tap_bin(page, point)
+        page.page.tap("#preview-pin")
+    page.wait_until("!document.getElementById('panel-notice').hidden")
+    assert f"Pin limit ({_MAX_PINNED})" in (page.state()["notice"] or "")
+    box = page.page.locator("#panel-notice").bounding_box()
+    assert 0 <= box["y"] and box["y"] + box["height"] <= page.page.viewport_size["height"]
+    assert page.errors == []
+
+
+def test_phone_header_keeps_the_pair_links_on_screen(open_phone_page, pages):
+    page = open_phone_page(pages["nav_a"])
+    header = _header(page)
+    assert page.page.is_visible("#pair-nav")
+    assert page.page.locator("#pair-nav .ca-pair-link").all_inner_texts() == [
+        "Dihedral density", "Swapped density",
+    ]
+    # One row more than a single-pair page.
+    assert header["height"] < 125
+    assert header["shown"] == ["#hdr-title", "#hdr-subtitle"]
     assert page.errors == []

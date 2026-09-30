@@ -133,6 +133,11 @@ html, body {
   font-weight: 600;
 }
 
+/* Only the narrow layout folds the controls away behind this button. */
+.ca-controls-toggle {
+  display: none;
+}
+
 .ca-header-stats {
   color: var(--ca-fg-muted);
   font-size: 12px;
@@ -326,14 +331,6 @@ html, body {
   grid-template-areas: "map panel";
 }
 
-@media (max-width: 900px) {
-  .ca-layout {
-    grid-template-columns: 1fr;
-    grid-template-areas: "map" "panel";
-    overflow-y: auto;
-  }
-}
-
 .ca-map {
   grid-area: map;
   min-width: 0;
@@ -350,13 +347,6 @@ html, body {
   border-left: 1px solid var(--ca-border);
   background: var(--ca-bg-elevated);
   overflow-y: auto;
-}
-
-@media (max-width: 900px) {
-  .ca-panel {
-    border-left: none;
-    border-top: 1px solid var(--ca-border);
-  }
 }
 
 .ca-axis-legend {
@@ -420,10 +410,28 @@ html, body {
   background: var(--ca-viewer-bg);
 }
 
+/* The status line, and on touch screens the Pin button beside it. */
+.ca-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .ca-preview-status {
   color: var(--ca-fg-muted);
   font-family: var(--ca-font-sans);
-  margin-bottom: 6px;
+}
+
+#preview-pin {
+  flex: none;
+  font-family: var(--ca-font-sans);
+}
+
+#preview-pin:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .ca-readout {
@@ -437,6 +445,48 @@ html, body {
   border-radius: 4px;
   background: var(--ca-bg);
   font-size: 12px;
+}
+
+/* Touch screens: a see-through cover over a locked 3D view (viewer.js), so
+   a swipe over it scrolls the page; its label sits at the bottom. */
+.ca-3d-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 0 8px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ca-3d-cover > span {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--ca-bg-elevated);
+  color: var(--ca-fg-muted);
+  font-family: var(--ca-font-sans);
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.ca-3d-done {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: none;
+}
+
+.ca-3d-unlocked > .ca-3d-cover {
+  display: none;
+}
+
+.ca-3d-unlocked > .ca-3d-done {
+  display: block;
 }
 
 .ca-viewer-error {
@@ -553,4 +603,90 @@ html, body {
   color: var(--ca-fg-muted);
   font-family: var(--ca-font-sans);
   font-style: italic;
+}
+
+/* Touch screens (the main input cannot hover; set by viewer.js): the preview
+   under the map shows the tapped bin's values, so no tooltip box covers the
+   map or runs off its edge; and the map does not zoom, so no zoom tools. */
+.ca-touch .js-plotly-plot .hoverlayer,
+.ca-touch .js-plotly-plot .modebar-container {
+  display: none;
+}
+
+/* Narrow layout (phones either way round, small tablets, narrow windows):
+   one column that scrolls as a whole, with the preview right under the map.
+   Last in the file, so it overrides the rules above. */
+@media (max-width: 900px) {
+  .ca-app {
+    height: auto;
+  }
+
+  /* Header: the title, the note and the Controls button, one per row. The
+     button opens the controls in place, under them. The two header rows are
+     dissolved so their parts can be reordered here. */
+  .ca-header {
+    justify-content: flex-start;
+    gap: 4px 8px;
+    padding: 6px 12px;
+  }
+
+  .ca-header-main,
+  .ca-header-sub {
+    display: contents;
+  }
+
+  .ca-header > *,
+  .ca-header-main > *,
+  .ca-header-sub > * {
+    flex: 1 1 100%;
+  }
+
+  .ca-header-title { order: 1; }
+  .ca-subtitle-stack { order: 2; display: grid; }
+  .ca-pair-nav { order: 3; }
+  .ca-header .ca-controls-toggle { order: 4; display: block; flex: none; }
+  .ca-header-stats { order: 5; }
+  .ca-scale-controls { order: 6; }
+  .ca-state-controls { order: 7; flex: none; }
+  #theme-toggle { order: 8; flex: none; }
+
+  .ca-header:not(.ca-controls-open) .ca-header-stats,
+  .ca-header:not(.ca-controls-open) .ca-scale-controls,
+  .ca-header:not(.ca-controls-open) .ca-state-controls,
+  .ca-header:not(.ca-controls-open) #theme-toggle {
+    display: none;
+  }
+
+  /* Temperature and unit take room only in free-energy mode here. */
+  .ca-fe-controls[hidden] {
+    display: none;
+  }
+
+  .ca-layout {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ca-map {
+    overflow: visible;
+  }
+
+  .ca-panel {
+    overflow: visible;
+    border-left: none;
+    border-top: 1px solid var(--ca-border);
+  }
+
+  /* Values (and the Pin button) first, with notices such as the pin limit
+     right under them, where the reader is looking; then the 3D view, then
+     reference. */
+  #preview-metadata { order: 1; }
+  #panel-notice { order: 2; }
+  #preview-3d { order: 3; }
+  #axis-legend { order: 4; }
+  #comparison-tray { order: 5; padding: 12px; }
+
+  .ca-preview-viewer {
+    height: 220px;
+  }
 }

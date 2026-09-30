@@ -70,6 +70,37 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
     value for a page's pair keeps its card there, marked "Not on this map". A page opened
     on its own, not through a header link, starts with no pins. See
     `docs/adr/0002-pins-are-frames-carried-in-link-hash.md`.
+- Phones and other touch screens. Two things are decided separately: the input (touch
+  behaviour is on when the main input cannot hover, i.e. a finger) and the screen width
+  (the narrow layout is on below 900 px). So a tablet gets the wide layout with touch
+  behaviour, and a narrow desktop window gets the narrow layout with mouse behaviour.
+  Phones are meant for looking around; the full workflow is on desktop.
+  - Touch: a tap previews a bin, as hovering does with a mouse. The tapped bin is
+    outlined with a dashed line (the preview marker) instead of a tooltip. A **Pin**
+    button next to the values pins the previewed frame; it then reads "Pinned · N", and
+    the page does not scroll. Tapping a pin's badge scrolls to its card. A double tap is
+    two previews and never clears pins; use **Clear all**. With `hover_preview: false`
+    a tap pins directly, as a click does.
+  - Touch: a swipe on the map scrolls the page. The map does not zoom or pan, and Plotly's
+    zoom tools are hidden; use the browser's two-finger zoom for a closer look. At phone
+    width one bin of a 180 × 180 map is about 2 px, so a tap lands within a few bins of
+    the aim; the preview shows which bin it hit.
+  - Touch: every 3D view starts locked under a "Tap to rotate" cover, so swipes over it
+    scroll the page. A tap unlocks that view for turning and zooming; **Done** or a tap
+    anywhere else locks it again. The shared camera still turns every view.
+  - Card-hover effects (bold badge, faded markers, outlined card) need a mouse and do
+    not exist on touch screens.
+  - Narrow layout: the page is one column that scrolls as a whole: the map, then the
+    preview (values and Pin first, with notices such as the pin limit right under them,
+    then the 3D view), the atom legend and the pins. The
+    header shows the title, the "not a potential energy surface" note and a **Controls**
+    button that names the current settings (e.g. "Controls · log counts · states off").
+    It opens the scale, temperature and unit, state and theme controls in place, and the
+    frame and bin counts. Pair links stay visible.
+  - Narrow layout: the map fits the column's width with its desktop shape and never
+    grows past its built size (700 × 600). The figure's own title is dropped (the header
+    names the map) and the colour bar is thinner. A new pin does not scroll the page to
+    its card.
 - Every embedded structure is rigidly rotated onto one reference (the earliest frame,
   fitted on heavy atoms), so structures from different bins face the same way and can be
   compared. This is on by default; set `plots.interactive.alignment.enabled: false` to show

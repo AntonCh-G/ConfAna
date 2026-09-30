@@ -55,6 +55,11 @@
   var maxPinned = settings.max_pinned || 15;
   var hoverPreview = settings.hover_preview !== false;
   var axisAtoms = pageData.axis_atoms || null;
+  // Touch behaviour follows the input, not the screen width: it is on when
+  // the main input cannot hover (a finger). Then a tap previews a bin, and
+  // pinning is a separate step. The layout follows the width (viewer.css).
+  var touchInput = !!(window.matchMedia && window.matchMedia('(hover: none)').matches);
+  document.documentElement.classList.toggle('ca-touch', touchInput);
 
   // -------------------------------------------------------------------
   // Payload codec — mirrors confana/payload_codec.py
@@ -353,7 +358,7 @@
     if ((layout.xaxis || {}).zerolinecolor !== grid) update['xaxis.zerolinecolor'] = grid;
     if ((layout.yaxis || {}).zerolinecolor !== grid) update['yaxis.zerolinecolor'] = grid;
     var labelBg = cssVar('--ca-state-label-bg');
-    // Pin badges are recoloured by drawPinMarkers instead.
+    // Pin badges are recoloured by drawMapMarkers instead.
     (layout.annotations || []).forEach(function (a, i) {
       if (String(a.name || '').indexOf('pin-') === 0) return;
       if (a.bgcolor !== labelBg) update['annotations[' + i + '].bgcolor'] = labelBg;
@@ -403,7 +408,7 @@
       if (Object.keys(layoutUpdate).length || Object.keys(traceUpdate).length) {
         Plotly.update(gd, traceUpdate, layoutUpdate, [0]);
       }
-      if (pins.length) drawPinMarkers();
+      if (pins.length || previewedBin) drawMapMarkers();
     }
     var viewerBg = hexToInt(cssVar('--ca-viewer-bg'));
     attachedViewers().forEach(function (v) {
@@ -444,8 +449,48 @@
       return null;
     }
     v.setViewChangeCallback(function () { onViewChange(v); });
+    if (touchInput) addTouchLock(el);
     return v;
   }
+
+  // Touch: 3Dmol claims every touch on its canvas, so a page of full-width
+  // views could hardly be scrolled. Each view starts locked under a
+  // see-through cover, which a swipe scrolls past. A tap on the cover
+  // unlocks that one view; its Done button, or a tap anywhere else, locks it.
+  var unlockedViewEl = null;
+
+  function addTouchLock(el) {
+    var cover = document.createElement('button');
+    cover.type = 'button';
+    cover.className = 'ca-3d-cover';
+    var label = document.createElement('span');
+    label.textContent = 'Tap to rotate';
+    cover.appendChild(label);
+    cover.addEventListener('click', function () { unlockView(el); });
+    var done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'ca-btn ca-3d-done';
+    done.textContent = 'Done';
+    done.addEventListener('click', lockView);
+    el.appendChild(cover);
+    el.appendChild(done);
+  }
+
+  function unlockView(el) {
+    lockView();
+    el.classList.add('ca-3d-unlocked');
+    unlockedViewEl = el;
+  }
+
+  function lockView() {
+    if (unlockedViewEl) unlockedViewEl.classList.remove('ca-3d-unlocked');
+    unlockedViewEl = null;
+  }
+
+  // Capture phase: it runs before the tapped control's own handler.
+  document.addEventListener('click', function (event) {
+    if (unlockedViewEl && !unlockedViewEl.contains(event.target)) lockView();
+  }, true);
 
   // One camera for every 3D view: turning or zooming the preview or any card
   // turns and zooms them all, and a new structure opens in that camera, so
@@ -604,6 +649,7 @@
   function releaseViewerBox(card) {
     var box = card.querySelector('.comparison-viewer');
     if (!box) return;
+    if (box === unlockedViewEl) lockView();
     if (box._viewer3d) {
       box._viewer3d._caSynced = false;
       box._viewer3d.clear();
@@ -674,6 +720,8 @@
   var pins = [];
   var focusedPinNumber = null;
   var hoveredBinKey = null;
+  // Touch only: the bin of the last tap ({xi, yi, key}), which the map marks.
+  var previewedBin = null;
   var PIN_OFFSET = 22;  // px from the frame's spot to its badge
   var PIN_EDGE = 0.85;  // past this share of the visible range the badge flips inward
   var PIN_FADED = 0.3;
@@ -812,8 +860,11 @@
     more.appendChild(metaEl);
     card.appendChild(more);
 
-    card.addEventListener('mouseenter', function () { setFocusedPin(pin.number); });
-    card.addEventListener('mouseleave', function () { setFocusedPin(null); });
+    // Hover effects need a mouse: on a touch screen a tap fires mouseenter too.
+    if (!touchInput) {
+      card.addEventListener('mouseenter', function () { setFocusedPin(pin.number); });
+      card.addEventListener('mouseleave', function () { setFocusedPin(null); });
+    }
     return card;
   }
 
@@ -866,7 +917,9 @@
         }
       }
     }
-    if (!quiet) focusCard(pin.card);
+    // Only the wide layout scrolls to the card: there the side panel scrolls.
+    // In the narrow layout it would move the whole page away from the map.
+    if (!quiet && !isNarrow()) focusCard(pin.card);
     return pin;
   }
 
@@ -879,9 +932,10 @@
 
   function pinsChanged() {
     updateTrayVisibility();
+    updatePinButton();
     // The mouse may rest on the bin just pinned: no new hover event comes.
     linkCardsToBin(hoveredBinKey);
-    drawPinMarkers();
+    drawMapMarkers();
     syncPinHash();
   }
 
@@ -907,6 +961,32 @@
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') clearAllPins();
   });
+
+  // The frame a point on the map pins: its bin's representative frame, or
+  // in per-frame mode the frame nearest the point. {meta, xyz} or null.
+  function pinCandidate(pt) {
+    if (binGeo) {
+      var bin = binFromPoint(pt);
+      var meta = bin ? binMetaFor(bin.key) : null;
+      return meta ? {meta: meta, xyz: binXyzFor(bin.key)} : null;
+    }
+    if (!frameCount()) return null;
+    var xs = frameColumn(axisSpec.x_col);
+    var ys = frameColumn(axisSpec.y_col);
+    var bestDist = Infinity;
+    var bestIndex = -1;
+    for (var i = 0; i < xs.length; i++) {
+      if (xs[i] == null || ys[i] == null) continue;
+      var dx = xs[i] - pt.x;
+      var dy = ys[i] - pt.y;
+      var d = dx * dx + dy * dy;
+      if (d < bestDist) {
+        bestDist = d;
+        bestIndex = i;
+      }
+    }
+    return bestIndex >= 0 ? {meta: frameAt(bestIndex), xyz: null} : null;
+  }
 
   // --- Pin markers on the map ---
   function pinOpacity(pin) {
@@ -1009,12 +1089,33 @@
     return {stateLabels: stateLabels, pins: pinLayout(stateLabels.length)};
   }
 
-  function drawPinMarkers() {
+  // Touch only: the outline of the bin the last tap landed on, so the reader
+  // sees where the finger hit. Dashed, unlike a pin's solid outline, with the
+  // same halo so it shows on any map colour. After the pin shapes, whose
+  // indices setFocusedPin relies on.
+  function previewMarkerShapes() {
+    if (!previewedBin || !grid) return [];
+    var x0 = grid.x_min + previewedBin.xi * grid.bin_w;
+    var y0 = grid.y_min + previewedBin.yi * grid.bin_h;
+    function outline(line) {
+      return {
+        type: 'rect', name: 'preview', xref: 'x', yref: 'y', layer: 'above',
+        x0: x0, x1: x0 + grid.bin_w, y0: y0, y1: y0 + grid.bin_h,
+        fillcolor: 'rgba(0,0,0,0)', line: line
+      };
+    }
+    return [
+      outline({color: cssVar('--ca-pin-halo'), width: 4}),
+      outline({color: cssVar('--ca-pin'), width: 2, dash: 'dash'})
+    ];
+  }
+
+  function drawMapMarkers() {
     if (!gd || !window.Plotly) return;
     var layout = mapAnnotations();
     Plotly.relayout(gd, {
       annotations: layout.stateLabels.concat(layout.pins.annotations),
-      shapes: layout.pins.shapes
+      shapes: layout.pins.shapes.concat(previewMarkerShapes())
     });
   }
 
@@ -1039,6 +1140,8 @@
 
   // Map hover: the cards of the pins in the hovered bin glow.
   function linkCardsToBin(binKey) {
+    // A tap is not a hover: touch screens have no hover links.
+    if (touchInput) return;
     hoveredBinKey = binKey;
     pins.forEach(function (pin) {
       var linked = !!binKey && !!pin.place.bin && pin.place.bin.key === binKey;
@@ -1056,7 +1159,7 @@
       var offset = badgeOffset(pin.place);
       return offset.ax !== pin.offset.ax || offset.ay !== pin.offset.ay;
     });
-    if (flipped) drawPinMarkers();
+    if (flipped) drawMapMarkers();
   }
 
   // --- Pins in the link hash ---
@@ -1159,7 +1262,7 @@
   }
 
   // -------------------------------------------------------------------
-  // Hover preview
+  // Preview (hovering with a mouse, tapping on a touch screen)
   // -------------------------------------------------------------------
   var previewBox = document.getElementById('preview-3d');
   var previewMetaBox = document.getElementById('preview-metadata');
@@ -1192,12 +1295,21 @@
     return 'Could not unpack the embedded data: ' + payloadError;
   }
 
+  function idleStatus() {
+    if (touchInput) return hasStructures ? 'Tap a bin to preview it' : 'Tap a bin to read its values';
+    return hasStructures ? 'Hover over the map to preview a bin' : 'Hover over the map';
+  }
+
   // Both run once, when the compressed blocks are unpacked (or fail to be).
   function onPayloadsReady() {
-    setStatus(hasStructures ? 'Hover over the map to preview a bin' : 'Hover over the map');
-    // The cursor may already sit on a bin: redo that hover.
+    setStatus(idleStatus());
+    // The cursor may already sit on a bin, or a tap came early: redo it.
     currentHoverKey = null;
-    if (pendingPoint) processHover();
+    if (pendingPoint) {
+      if (touchInput) previewedFrame = tappedFrame(pendingPoint);
+      processHover();
+      updatePinButton();
+    }
   }
 
   function onPayloadsFailed() {
@@ -1267,7 +1379,8 @@
 
     if (!binGeo) {
       // Per-frame mode: never scan the frame table on hover (click only).
-      setStatus(Number.isFinite(pt.z) ? 'Click to pin the nearest frame' : 'No frames in this bin');
+      var pinHint = touchInput ? 'Press Pin to pin the nearest frame' : 'Click to pin the nearest frame';
+      setStatus(Number.isFinite(pt.z) ? pinHint : 'No frames in this bin');
       return;
     }
 
@@ -1289,6 +1402,46 @@
       lastShownKey = bin.key;
     }
     setStatus('Bin ' + bin.key);
+  }
+
+  // Touch: a tap previews the bin it lands on, as hovering does with a mouse,
+  // and the map marks that bin.
+  function previewTap(pt) {
+    pendingPoint = pt;
+    previewedBin = binFromPoint(pt);
+    previewedFrame = tappedFrame(pt);
+    processHover();
+    updatePinButton();
+    drawMapMarkers();
+  }
+
+  // Touch: the Pin button pins the previewed frame, as a click does with a
+  // mouse, then names the pin. The page stays where it is.
+  var previewPinBtn = document.getElementById('preview-pin');
+  // The frame the Pin button pins ({meta, xyz}), or null.
+  var previewedFrame = null;
+
+  // In per-frame mode an empty bin has nothing to pin, though some frame
+  // elsewhere is nearest (a mouse click still pins that one).
+  function tappedFrame(pt) {
+    if (payloadsPending || payloadError) return null;
+    if (!binGeo && !Number.isFinite(pt.z)) return null;
+    return pinCandidate(pt);
+  }
+
+  function updatePinButton() {
+    if (!previewPinBtn) return;
+    previewPinBtn.hidden = !previewedFrame;
+    if (!previewedFrame) return;
+    var existing = findPin(frameKey(previewedFrame.meta));
+    previewPinBtn.textContent = existing ? 'Pinned · ' + existing.number : 'Pin';
+    previewPinBtn.disabled = !!existing;
+  }
+
+  if (previewPinBtn) {
+    previewPinBtn.addEventListener('click', function () {
+      if (previewedFrame) pinFrame(previewedFrame, true);
+    });
   }
 
   function onHover(data) {
@@ -1364,7 +1517,7 @@
     if (previewBox && hasStructures) previewBox.hidden = false;
   }
 
-  if (payloadsPending) setStatus(loadingMessage());
+  setStatus(payloadsPending ? loadingMessage() : idleStatus());
   loadPayloads();
 
   // -------------------------------------------------------------------
@@ -1474,6 +1627,7 @@
     }
     setText('hdr-scale-mode', valueLabel(mode));
     if (subtitleEl && scaleModes[mode].subtitle) subtitleEl.textContent = scaleModes[mode].subtitle;
+    syncControlsToggle();
   }
 
   function applyScale() {
@@ -1602,6 +1756,7 @@
     if (statesToggle) {
       statesToggle.setAttribute('aria-pressed', String(!!uiState.state_overlay_visible));
     }
+    syncControlsToggle();
   }
 
   function applyStates(regrid) {
@@ -1646,6 +1801,32 @@
     }
     syncStateControls();
   }
+
+  // -------------------------------------------------------------------
+  // Header controls button (narrow layout)
+  // -------------------------------------------------------------------
+  // In the narrow layout the controls sit behind one button, which opens
+  // them in place and names the current settings, so a visitor sees there
+  // is something to change. Wide layouts never show it.
+  var headerEl = document.querySelector('.ca-header');
+  var controlsToggle = document.getElementById('controls-toggle');
+
+  function syncControlsToggle() {
+    if (!controlsToggle) return;
+    var parts = ['Controls'];
+    if (scale) parts.push(scaleModes[scaleMode()].label);
+    if (states) parts.push(uiState.state_overlay_visible ? 'states on' : 'states off');
+    controlsToggle.textContent = parts.join(' · ');
+  }
+
+  if (controlsToggle && headerEl) {
+    controlsToggle.addEventListener('click', function () {
+      var open = !headerEl.classList.contains('ca-controls-open');
+      headerEl.classList.toggle('ca-controls-open', open);
+      controlsToggle.setAttribute('aria-expanded', String(open));
+    });
+  }
+  syncControlsToggle();
 
   // -------------------------------------------------------------------
   // Coordinate-pair navigation
@@ -1705,6 +1886,134 @@
   }
 
   // -------------------------------------------------------------------
+  // Map size
+  // -------------------------------------------------------------------
+  // The figure is built at its desktop size. In the narrow layout it shrinks
+  // to the column's width with the same shape, never growing past the
+  // desktop size. The header already names the map, so the figure's own
+  // title goes, and a thinner colour bar leaves the plot more of the width.
+  // The right margin stays fixed, as on desktop, so a scale switch never
+  // resizes the plot.
+  var mapEl = document.querySelector('.ca-map');
+  var narrowQuery = window.matchMedia ? window.matchMedia('(max-width: 900px)') : null;
+  var NARROW_COLORBAR_PX = 14;
+  var NARROW_MARGIN = {l: 60, r: 96, t: 16, b: 50};
+  var wideFigure = null;
+  var fitFrameRequested = false;
+
+  function isNarrow() {
+    return !!(narrowQuery && narrowQuery.matches);
+  }
+
+  function columnWidth() {
+    var style = getComputedStyle(mapEl);
+    return Math.floor(mapEl.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+  }
+
+  function fitMap() {
+    fitFrameRequested = false;
+    if (!gd || !window.Plotly || !mapEl) return;
+    if (!wideFigure) {
+      wideFigure = {
+        width: gd.layout.width,
+        height: gd.layout.height,
+        margin: gd.layout.margin || {},
+        title: (gd.layout.title || {}).text || '',
+        colorbar: (gd.data[0].colorbar || {}).thickness
+      };
+    }
+    var available = isNarrow() ? columnWidth() : Infinity;
+    var fit = available < wideFigure.width;
+    var width = fit ? available : wideFigure.width;
+    var height = fit ? Math.round(width * wideFigure.height / wideFigure.width) : wideFigure.height;
+    if (gd.layout.width === width && gd.layout.height === height) return;
+    // The exported div carries the build size as an inline style too.
+    gd.style.width = width + 'px';
+    gd.style.height = height + 'px';
+    Plotly.update(gd, {
+      'colorbar.thickness': fit ? NARROW_COLORBAR_PX : wideFigure.colorbar == null ? null : wideFigure.colorbar
+    }, {
+      width: width,
+      height: height,
+      margin: fit ? NARROW_MARGIN : wideFigure.margin,
+      'title.text': fit ? '' : wideFigure.title
+    }, [0]);
+  }
+
+  window.addEventListener('resize', function () {
+    if (fitFrameRequested) return;
+    fitFrameRequested = true;
+    window.requestAnimationFrame(fitMap);
+  });
+
+  // -------------------------------------------------------------------
+  // Clicks and taps on the map
+  // -------------------------------------------------------------------
+  // A click pins the frame at the point (with a mouse, or on a touch page
+  // without a preview). A pin is a frame: the same frame again only shows
+  // its card.
+  function pinAt(pt) {
+    if (payloadsPending || payloadError) {
+      showNotice(payloadError ? failedMessage() : loadingMessage());
+      return;
+    }
+    var frame = pinCandidate(pt);
+    if (frame) pinFrame(frame, false);
+  }
+
+  // Pins a frame ({meta, xyz}). If it is pinned already, a click shows its
+  // card; `quiet` (the Pin button) leaves the page where it is.
+  function pinFrame(frame, quiet) {
+    var existing = findPin(frameKey(frame.meta));
+    if (existing) {
+      if (!quiet) focusCard(existing.card);
+      return;
+    }
+    addPin(frame.meta, frame.xyz, null, quiet);
+    pinsChanged();
+  }
+
+  // Touch: the bin under a tap, read from the tap's own position, in the
+  // form of a Plotly heatmap point (bin centre, value, [row, col]). Plotly's
+  // click names its last hover point, which a tap does not move once the map
+  // cannot be dragged, so it would name the previous tap's bin.
+  function pointAtTap(event) {
+    var fl = gd._fullLayout;
+    var size = fl && fl._size;
+    if (!size || !grid) return null;
+    var rect = gd.getBoundingClientRect();
+    var px = event.clientX - rect.left - size.l;
+    var py = event.clientY - rect.top - size.t;
+    if (px < 0 || py < 0 || px > size.w || py > size.h) return null;
+    var xr = fl.xaxis.range;
+    var yr = fl.yaxis.range;
+    var xi = binIndex(xr[0] + px / size.w * (xr[1] - xr[0]), grid.x_min, grid.bin_w, grid.n_bins_x);
+    var yi = binIndex(yr[1] - py / size.h * (yr[1] - yr[0]), grid.y_min, grid.bin_h, grid.n_bins_y);
+    if (xi === null || yi === null) return null;
+    var z = gd._fullData[0].z[yi][xi];
+    return {
+      x: grid.x_min + (xi + 0.5) * grid.bin_w,
+      y: grid.y_min + (yi + 0.5) * grid.bin_h,
+      z: z === null || Number.isNaN(z) ? null : z,
+      pointNumber: [yi, xi]
+    };
+  }
+
+  // Touch: a tap previews, never pins, and two taps are two previews (a
+  // double tap clearing every pin would have no undo). A tap on a pin badge
+  // is the badge's (plotly_clickannotation shows its card).
+  function onTap(event) {
+    // Plotly adds two synthetic clicks of its own to each tap (one at 0, 0);
+    // only the browser's own click counts, or a tap would act three times.
+    if (!event.isTrusted) return;
+    if (event.target.closest && event.target.closest('.annotation')) return;
+    var pt = pointAtTap(event);
+    if (!pt) return;
+    if (hoverPreview) previewTap(pt);
+    else pinAt(pt);
+  }
+
+  // -------------------------------------------------------------------
   // Plotly events
   // -------------------------------------------------------------------
   // gd.on(...) is Plotly's own pub/sub attached to the graph div (not a
@@ -1716,6 +2025,8 @@
 
   if (gd) {
     gd.on('plotly_click', function (data) {
+      // Touch screens read taps in onTap instead.
+      if (touchInput) return;
       // Double-click clears the pins. Use the browser's click count, which
       // requires both clicks in the same spot: plotly_doubleclick fires for
       // any two clicks within 300 ms, even on different bins, and would wipe
@@ -1724,49 +2035,10 @@
         clearAllPins();
         return;
       }
-      var pt = data.points[0];
-      var cx = pt.x;
-      var cy = pt.y;
-
-      var bin = binGeo ? binFromPoint(pt) : null;
-
-      if (payloadsPending || payloadError) {
-        showNotice(payloadError ? failedMessage() : loadingMessage());
-        return;
-      }
-
-      var best = null;
-      if (bin) {
-        best = binMetaFor(bin.key);
-      } else if (frameCount()) {
-        var xs = frameColumn(axisSpec.x_col);
-        var ys = frameColumn(axisSpec.y_col);
-        var bestDist = Infinity;
-        var bestIndex = -1;
-        for (var i = 0; i < xs.length; i++) {
-          if (xs[i] == null || ys[i] == null) continue;
-          var dx = xs[i] - cx;
-          var dy = ys[i] - cy;
-          var d = dx * dx + dy * dy;
-          if (d < bestDist) {
-            bestDist = d;
-            bestIndex = i;
-          }
-        }
-        if (bestIndex >= 0) best = frameAt(bestIndex);
-      }
-
-      if (!best) return;
-
-      // A pin is a frame: the same frame clicked again only shows its card.
-      var existing = findPin(frameKey(best));
-      if (existing) {
-        focusCard(existing.card);
-        return;
-      }
-      addPin(best, bin ? binXyzFor(bin.key) : null);
-      pinsChanged();
+      pinAt(data.points[0]);
     });
+
+    if (touchInput) gd.addEventListener('click', onTap);
 
     // A pin badge is clicked: show that pin's card.
     gd.on('plotly_clickannotation', function (data) {
@@ -1775,7 +2047,7 @@
       if (pin) focusCard(pin.card);
     });
 
-    if (hoverPreview) gd.on('plotly_hover', onHover);
+    if (hoverPreview && !touchInput) gd.on('plotly_hover', onHover);
     gd.on('plotly_unhover', function () { linkCardsToBin(null); });
     gd.on('plotly_relayout', function (event) {
       updateDegreeTicks();
@@ -1783,6 +2055,11 @@
     });
   }
 
+  // Touch: a drag on the map scrolls the page, and the map never zooms or
+  // pans. Plotly's default drag draws a zoom box and holds the page still;
+  // its zoom tools are hidden too (viewer.css).
+  if (touchInput && gd && window.Plotly) Plotly.relayout(gd, {dragmode: false});
+  fitMap();
   applyTheme();
   updateTrayVisibility();
   restorePinsFromHash();

@@ -62,8 +62,12 @@ A byte-offset index built by scanning each xyz file once. Enables O(1) random ac
 **Representative frame**
 The one frame shown for a density bin: the sampled frame closest to the bin centre. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames.
 
+**Preview**
+The one bin currently shown in the side panel, with its representative frame and values. It is passing: the next bin pointed at replaces it. With a mouse, hovering a bin previews it; on a touch screen, tapping a bin previews it.
+_Avoid_: hover preview (on a touch screen there is no hover)
+
 **Pin**
-One frame the researcher has selected on the interactive map to keep on screen. A pin is a frame, not a bin: clicking a bin pins that bin's representative frame. The same pin appears on every coordinate-pair page of the run, placed at that frame's own coordinates in each pair.
+One frame the researcher has selected on the interactive map to keep on screen. A pin is a frame, not a bin: pinning a bin pins that bin's representative frame. With a mouse, clicking a bin pins it; on a touch screen, pinning is a separate step from the preview. The same pin appears on every coordinate-pair page of the run, placed at that frame's own coordinates in each pair.
 _Avoid_: pinned bin, card (the card is only how a pin is displayed)
 
 **Pin number**
@@ -71,6 +75,9 @@ The small integer that names a pin on both the map and its card. A new pin takes
 
 **Pin marker**
 The on-map sign of a pin: a numbered badge with a short arrow pointing at the frame's exact coordinates, plus the outline of the bin the frame falls in.
+
+**Preview marker**
+The on-map sign of the preview on a touch screen: an outline of the previewed bin, kept until the next tap. With a mouse there is none; the pointer itself shows the bin.
 
 ## Config Schema
 

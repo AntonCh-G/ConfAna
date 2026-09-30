@@ -32,7 +32,7 @@ pip install -e .[dev]
 **Download raw file** button) and open it in any browser. It works offline.
 
 It shows the public MD17 aspirin trajectory (211,762 frames). Hover the map to see structures,
-and click a bin to pin one.
+and click a bin to pin one. On a phone, tap a bin to see its structure, then press **Pin**.
 
 ## Quick start: MD17 aspirin
 
@@ -90,6 +90,19 @@ beads separate for clustering and transitions. Start from
 | Drag any 3D view | Rotates all views together |
 | Header links | Switch pair pages; pins come along |
 | Scale buttons | `log counts`, `counts`, or `free-energy-like` |
+
+On a touch screen (phone or tablet):
+
+| Action | What happens |
+|---|---|
+| Tap a bin | Previews it; the bin is outlined on the map |
+| **Pin** (next to the values) | Pins the previewed frame; the button then shows its number |
+| Swipe on the map | Scrolls the page; the map does not zoom |
+| Tap a 3D view | Unlocks it for turning; **Done** or a tap elsewhere locks it again |
+| **Clear all** | Clears all pins (a double tap does not) |
+
+On a narrow screen the page is one scrolling column, and the scale and state controls
+sit behind the **Controls** button.
 
 Details: [docs/interactive-viewer.md](docs/interactive-viewer.md).
 
