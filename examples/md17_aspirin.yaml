@@ -51,13 +51,19 @@ plots:
       reference: earliest_frame
       atom_selection: heavy      # fit on non-hydrogen atoms
 
+# DBSCAN, not grid: at 15° cells and 100 frames per cell the grid method joins all four
+# regions of this map into one state, because the trajectory crosses between them often.
+# eps 10° / min_samples 300 gives one state per region (carboxyl ≈ 0° or 180°, ester
+# ≈ ±100°), plus two ~500-frame patches between the lower regions and 2.4 % noise.
+# The result is sensitive: a smaller eps or more min_samples splits the regions into
+# fragments; a larger eps merges them. Costs about 12 s and 4.4 GB for the 211,762 frames.
 clustering:
-  algorithm: grid
+  algorithm: dbscan
   groupby: [trajectory_id]
   default:
-    bin_size: 15.0
-    min_count: 100
-    periodic: true
+    eps: 10.0                    # degrees
+    min_samples: 300
+    periodic: true               # both dihedrals wrap at ±180°
 
 transitions:
   lag: 1
