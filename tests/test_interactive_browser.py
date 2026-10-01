@@ -396,25 +396,27 @@ class _Page:
     def drag(self, selector: str, dx: float, dy: float) -> None:
         """Drag across the element at *selector*, as a person turns a 3D view.
 
-        Waits for the element to stay still for a quarter of a second first: a
-        new pin smooth-scrolls the side panel, the scroll can take a few frames
-        to start on a busy machine, and a drag during it slides off the canvas
-        and turns nothing. Also waits for the drag point to land on the view's
-        3Dmol canvas, which is what takes the drag.
+        Waits first until two checks a quarter of a second apart find the
+        element in the same place, with its centre on the view's 3Dmol canvas:
+        a new pin smooth-scrolls the side panel, the scroll can start a few
+        frames late on a busy machine, and a drag during it slides off the
+        canvas and turns nothing. (The check returns a plain bool: Playwright
+        treats any returned Promise as success, whatever it resolves to.)
         """
+        self.page.evaluate("() => { window.__caDragSpot = null; }")
         self.page.wait_for_function(
-            """(sel) => new Promise((resolve) => {
+            """(sel) => {
               const el = document.querySelector(sel);
-              const top = () => el.getBoundingClientRect().top;
-              const before = top();
-              setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => {
-                // Settled, and the drag point really lands on the 3D canvas.
-                const r = el.getBoundingClientRect();
-                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-                resolve(top() === before && !!hit && hit.tagName === 'CANVAS' && el.contains(hit));
-              })), 250);
-            })""",
+              const r = el.getBoundingClientRect();
+              const spot = r.left + ',' + r.top;
+              const still = window.__caDragSpot === spot;
+              window.__caDragSpot = spot;
+              const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+              return still && !!hit && hit.tagName === 'CANVAS' && el.contains(hit);
+            }""",
             arg=selector,
+            polling=250,
+            timeout=10_000,
         )
         box = self.page.locator(selector).bounding_box()
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -1720,6 +1722,13 @@ def test_phone_map_fills_the_column_in_the_desktop_shape_and_is_restored_when_wi
     assert phone["width"] == _PHONE["viewport"]["width"] - 16
     assert phone["height"] == round(phone["width"] * 600 / 700)
     assert phone["box"] == [phone["width"], phone["height"]]
+    # Nothing keeps the build size either (Plotly 7 puts it on a wrapper around
+    # the figure): the map's column ends where the figure does, with no blank
+    # space under the map.
+    column = page.page.evaluate(
+        "Math.round(document.querySelector('.ca-map').getBoundingClientRect().height)"
+    )
+    assert column == phone["height"] + 16
     # The header names the map already.
     assert phone["title"] == ""
 
@@ -1962,7 +1971,9 @@ def _settled_pin_badge(page) -> dict:
 
     A preview tap redraws the pin badges a few pixels away a moment later, so
     a point read too early lands on the map beside the badge and previews a
-    bin instead. Waits until the box holds still and is what a tap there hits.
+    bin instead. Waits until two checks 150 ms apart find the box in the same
+    place, and a tap at its centre would hit the badge. (The check returns a
+    plain bool: Playwright treats any returned Promise as success.)
     """
     locate = """() => {
       const bg = [...document.querySelectorAll('.annotation rect.bg')].pop();
@@ -1970,17 +1981,19 @@ def _settled_pin_badge(page) -> dict:
       const r = bg.getBoundingClientRect();
       return {x: r.x + r.width / 2, y: r.y + r.height / 2};
     }"""
+    page.page.evaluate("() => { window.__caBadgeSpot = null; }")
     page.page.wait_for_function(
-        f"""() => new Promise((resolve) => {{
-          const locate = {locate};
-          const first = locate();
-          setTimeout(() => requestAnimationFrame(() => {{
-            const now = locate();
-            const hit = now && document.elementFromPoint(now.x, now.y);
-            resolve(!!first && !!now && first.x === now.x && first.y === now.y
-                    && !!hit && !!hit.closest('.annotation'));
-          }}), 150);
-        }})"""
+        f"""() => {{
+          const now = ({locate})();
+          if (!now) return false;
+          const spot = now.x + ',' + now.y;
+          const still = window.__caBadgeSpot === spot;
+          window.__caBadgeSpot = spot;
+          const hit = document.elementFromPoint(now.x, now.y);
+          return still && !!hit && !!hit.closest('.annotation');
+        }}""",
+        polling=150,
+        timeout=10_000,
     )
     return page.page.evaluate(locate)
 
