@@ -396,20 +396,23 @@ class _Page:
     def drag(self, selector: str, dx: float, dy: float) -> None:
         """Drag across the element at *selector*, as a person turns a 3D view.
 
-        Waits for the element to stop moving first: a new pin smooth-scrolls
-        the side panel, and a drag during that scroll lands off target.
+        Waits for the element to stay still for a quarter of a second first: a
+        new pin smooth-scrolls the side panel, the scroll can take a few frames
+        to start on a busy machine, and a drag during it slides off the canvas
+        and turns nothing. Also waits for the drag point to land on the view's
+        3Dmol canvas, which is what takes the drag.
         """
         self.page.wait_for_function(
             """(sel) => new Promise((resolve) => {
               const el = document.querySelector(sel);
               const top = () => el.getBoundingClientRect().top;
               const before = top();
-              requestAnimationFrame(() => requestAnimationFrame(() => {
-                // Settled, and the drag point really lands on the element.
+              setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+                // Settled, and the drag point really lands on the 3D canvas.
                 const r = el.getBoundingClientRect();
                 const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-                resolve(top() === before && !!hit && el.contains(hit));
-              }));
+                resolve(top() === before && !!hit && hit.tagName === 'CANVAS' && el.contains(hit));
+              })), 250);
             })""",
             arg=selector,
         )
