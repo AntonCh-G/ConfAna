@@ -32,9 +32,13 @@ def _write_xyz(path: Path, frames: list[str]) -> list[int]:
 
 
 def _row(table: pd.DataFrame, frame_number: int, bead_id: str | None = None) -> int:
-    bead = table["bead_id"].isna() if bead_id is None else table["bead_id"] == bead_id
-    match = (table["frame_number"] == frame_number) & bead
-    return int(np.flatnonzero(match.to_numpy(dtype=bool, na_value=False))[0])
+    # Compare as plain bools: with pyarrow installed, string columns compare to
+    # Arrow booleans, which cannot be combined with nullable ones while NA.
+    def matches(series: pd.Series) -> np.ndarray:
+        return series.to_numpy(dtype=bool, na_value=False)
+
+    bead = table["bead_id"].isna().to_numpy() if bead_id is None else matches(table["bead_id"] == bead_id)
+    return int(np.flatnonzero(matches(table["frame_number"] == frame_number) & bead)[0])
 
 
 def _xyz_table(path: Path, offsets: list, atom_count: int = 3) -> pd.DataFrame:
