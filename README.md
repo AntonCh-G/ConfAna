@@ -46,7 +46,7 @@ python scripts/md17_to_xyz.py                                  # download (193 M
 confana build-interactive --config examples/md17_aspirin.yaml
 ```
 
-Result (about 25 seconds after the download; finding the states needs about 4.5 GB of memory):
+Result (about 10 seconds after the download):
 
 ```text
 outputs/md17_aspirin/plots/density_dihedral.html   carboxyl vs ester dihedral
@@ -73,13 +73,13 @@ dof:                                       # angles to compute, 0-based atom ind
 coordinate_pairs:                          # one density map + HTML page per pair
   - {name: dihedral, x: carboxyl_dihedral, y: ester_dihedral}
 
-clustering:                                # states: one per region of the map
-  algorithm: dbscan
-  default: {eps: 10.0, min_samples: 300, periodic: true}
+clustering:                                # states: one per region of the map (four)
+  algorithm: grid
+  default: {bin_size: 30.0, min_count: 800}
 ```
 
-The config explains why it uses DBSCAN rather than the default grid method, and how
-sensitive the result is to `eps` and `min_samples`.
+The config explains how these settings were chosen, and which nearby values give the
+same four states.
 
 ## PIMD trajectories
 

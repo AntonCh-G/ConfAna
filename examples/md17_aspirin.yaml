@@ -51,19 +51,22 @@ plots:
       reference: earliest_frame
       atom_selection: heavy      # fit on non-hydrogen atoms
 
-# DBSCAN, not grid: at 15° cells and 100 frames per cell the grid method joins all four
-# regions of this map into one state, because the trajectory crosses between them often.
-# eps 10° / min_samples 300 gives one state per region (carboxyl ≈ 0° or 180°, ester
-# ≈ ±100°), plus two ~500-frame patches between the lower regions and 2.4 % noise.
-# The result is sensitive: a smaller eps or more min_samples splits the regions into
-# fragments; a larger eps merges them. Costs about 12 s and 4.4 GB for the 211,762 frames.
+# Four states, one per region of the map (carboxyl ≈ 0° or 180°, ester ≈ ±100°), with
+# 9.7 % of frames left as noise, mostly on the paths between regions. Frames are counted
+# in 30° cells; a cell joins a state when it holds at least 800 frames, and touching
+# cells (across the ±180° wrap too, since both axes are dihedrals) form one state.
+# Any min_count from 650 to 1050 gives the same four regions. Below that, cells on the
+# often-crossed paths join two regions into one state; above it, small extra states
+# appear, and from 1200 the sparse region at carboxyl ≈ 180°, ester ≈ -110° is all noise.
+# Smaller cells do worse: at 15° cells and 100 frames per cell all four regions join.
+# DBSCAN (eps 10°, min_samples 300) also finds the four regions, but adds two ~500-frame
+# patches between the lower ones, and needs about 4.4 GB of memory for these frames.
 clustering:
-  algorithm: dbscan
+  algorithm: grid
   groupby: [trajectory_id]
   default:
-    eps: 10.0                    # degrees
-    min_samples: 300
-    periodic: true               # both dihedrals wrap at ±180°
+    bin_size: 30.0               # degrees per cell, both axes
+    min_count: 800               # frames a cell needs to join a state
 
 transitions:
   lag: 1
