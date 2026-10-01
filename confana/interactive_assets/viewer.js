@@ -1927,9 +1927,14 @@
     var width = fit ? available : wideFigure.width;
     var height = fit ? Math.round(width * wideFigure.height / wideFigure.width) : wideFigure.height;
     if (gd.layout.width === width && gd.layout.height === height) return;
-    // The exported div carries the build size as an inline style too.
-    gd.style.width = width + 'px';
-    gd.style.height = height + 'px';
+    // The exported figure carries the build size as inline styles too: on the
+    // graph div itself (Plotly.py 6) or on a wrapper div around it (Plotly.py
+    // 7). Resize every element up to the column that has one, or the old size
+    // still sticks out and a phone zooms the whole page out to show it.
+    for (var el = gd; el && el !== mapEl; el = el.parentElement) {
+      if (el.style.width) el.style.width = width + 'px';
+      if (el.style.height) el.style.height = height + 'px';
+    }
     Plotly.update(gd, {
       'colorbar.thickness': fit ? NARROW_COLORBAR_PX : wideFigure.colorbar == null ? null : wideFigure.colorbar
     }, {
