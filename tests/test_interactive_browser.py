@@ -1898,15 +1898,26 @@ def _swipe_up(page, selector: str, distance: int = 150) -> None:
     """A finger swipe that starts on the element at *selector*, as when scrolling down.
 
     It starts in the middle of the part of the element that is on screen.
+    The finger is raw touch events (down, ten moves, up), the same way
+    Playwright taps: DevTools' synthesizeScrollGesture scrolled the page on
+    macOS but not on GitHub's Linux runner.
     """
     box = page.page.locator(selector).bounding_box()
     screen_height = page.page.viewport_size["height"]
     top, bottom = max(box["y"], 0), min(box["y"] + box["height"], screen_height)
+    x, y = box["x"] + box["width"] / 2, (top + bottom) / 2
     cdp = page.context.new_cdp_session(page.page)
-    cdp.send("Input.synthesizeScrollGesture", {
-        "x": box["x"] + box["width"] / 2, "y": (top + bottom) / 2,
-        "yDistance": -distance, "gestureSourceType": "touch", "speed": 800,
-    })
+
+    def touch(kind: str, at_y: float) -> None:
+        points = [] if kind == "touchEnd" else [{"x": x, "y": at_y}]
+        cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": points})
+
+    steps = 10
+    touch("touchStart", y)
+    for step in range(1, steps + 1):
+        page.page.wait_for_timeout(16)
+        touch("touchMove", y - distance * step / steps)
+    touch("touchEnd", y - distance)
     page.page.wait_for_timeout(300)
 
 
