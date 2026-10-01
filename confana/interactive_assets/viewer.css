@@ -700,8 +700,13 @@ html, body {
     flex-direction: column;
   }
 
+  /* The page scrolls as one column, so the map does not scroll on its own.
+     It does clip sideways: the figure is drawn at its desktop width and only
+     then shrunk to the column, and until then a phone would widen the whole
+     page to show it, zooming out and back about a second later. */
   .ca-map {
     overflow: visible;
+    overflow-x: clip;
   }
 
   .ca-panel {

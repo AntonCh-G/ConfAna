@@ -1625,6 +1625,28 @@ def test_phone_page_is_one_scrolling_column_with_the_preview_under_the_map(open_
     assert page.errors == []
 
 
+_WIDTH_FROM_FIRST_FRAME = """
+window.__widths = [];
+const t0 = performance.now();
+const sample = () => {
+  window.__widths.push(window.innerWidth);
+  if (performance.now() - t0 < 1500) requestAnimationFrame(sample);
+};
+requestAnimationFrame(sample);
+"""
+
+
+def test_phone_page_never_zooms_out_while_it_loads(open_phone_page, pages):
+    # The figure is drawn at its desktop width and shrunk to the column just
+    # after; if it could stick out until then, a phone would lay the page out
+    # wider (zoomed out) and only come back about a second later, and a tap or
+    # swipe in that time lands in the wrong place.
+    page = open_phone_page(pages["bin"], init_script=_WIDTH_FROM_FIRST_FRAME)
+    page.page.wait_for_timeout(1600)
+    widths = page.page.evaluate("window.__widths")
+    assert widths and set(widths) == {_PHONE["viewport"]["width"]}, sorted(set(widths))
+
+
 def _header(page) -> dict:
     """What the header shows: its height, the Controls button and which parts are on screen."""
     return page.page.evaluate(
