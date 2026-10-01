@@ -15,6 +15,7 @@ import pytest
 
 from confana.models import CoordinatePair
 from confana.plots_interactive import make_density_interactive, render_density_page
+from tests.hdf5_runs import hdf5_table, write_hdf5_run
 
 
 class _ScriptCollector(HTMLParser):
@@ -104,7 +105,11 @@ def _dihedral_pair() -> CoordinatePair:
 
 
 def _make_angle_df(n: int = 100, seed: int = 0) -> pd.DataFrame:
-    """Return a minimal DataFrame with all standard coordinate table columns."""
+    """Return a minimal DataFrame with all standard coordinate table columns.
+
+    The frames name no structure (no ``byte_offset``): ``/data/test.xyz`` is
+    not a real file. Tests that embed structures write real xyz files.
+    """
     rng = np.random.default_rng(seed)
     return pd.DataFrame(
         {
@@ -113,7 +118,7 @@ def _make_angle_df(n: int = 100, seed: int = 0) -> pd.DataFrame:
             "trajectory_id": ["traj0"] * n,
             "bead_id": [None] * n,
             "frame_number": range(n),
-            "byte_offset": rng.integers(0, 100_000, size=n).tolist(),
+            "byte_offset": pd.array([None] * n, dtype="Int64"),
             "atom_count": [21] * n,
             "comment_line": [""] * n,
             "local_frame_index": range(n),
@@ -386,6 +391,27 @@ def test_page_representatives_are_exactly_the_counted_bins(tmp_path):
     }
     assert counted == {"1_0", "2_0", "3_3", "5_5"}
     assert set(data["bin_frame_metadata"]) == counted
+
+
+def test_hdf5_page_embeds_a_structure_for_every_occupied_bin(tmp_path):
+    """HDF5 frames (byte_offset -1) reach the page; they used to be dropped silently."""
+    h5_path, _, _ = write_hdf5_run(tmp_path / "s0")
+    pair = CoordinatePair(
+        name="dist", x_col="d_co", y_col="d_oh", x_label="C-O", y_label="O-H",
+        title="Distances", x_domain=(0.0, 10.0), y_domain=(0.0, 10.0), bins=4,
+    )
+    outpath = tmp_path / "hdf5.html"
+
+    make_density_interactive(
+        hdf5_table(h5_path), pair, outpath,
+        config={"plots": {"interactive": {
+            "embed_xyz_payload": True, "compress_payloads": False, "include_plotlyjs": "cdn",
+        }}},
+    )
+
+    data = _page_data(outpath.read_text(encoding="utf-8"))
+    assert data["bin_xyz_payloads"]
+    assert set(data["bin_xyz_payloads"]) == set(data["bin_frame_metadata"])
 
 
 def test_make_density_interactive_contains_comparison_tray(tmp_path):

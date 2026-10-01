@@ -13,24 +13,34 @@ Public API
 ----------
 - ``build_coordinate_table_from_hdf5``
 - ``build_coordinate_table_from_hdf5_files``
+- ``HDF5FrameReader``
+- ``HDF5_BYTE_OFFSET``
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
 
+from confana.io_xyz import read_xyz_frame_by_offset
+from confana.models import FrameRecord
+
 if TYPE_CHECKING:
     from confana.models import DoFDefinition
 
 logger = logging.getLogger(__name__)
 
-_SENTINEL_BYTE_OFFSET: int = -1
+HDF5_BYTE_OFFSET: int = -1
+"""``byte_offset`` of every HDF5-sourced row: HDF5 frames have no byte position
+and are read by ``frame_number`` and ``bead_id`` instead (see :class:`HDF5FrameReader`)."""
+
+_BEAD_LABEL = re.compile(r"^bead_(\d+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -52,22 +62,46 @@ def _read_atom_types_from_input_xyz(h5_path: Path) -> list[str]:
             f"Cannot find atom-type source at {input_xyz}. "
             "Each simulation directory must contain input.xyz alongside hdf5/."
         )
-    elements: list[str] = []
-    with input_xyz.open("rb") as fh:
-        n_atoms = int(fh.readline().strip())
-        fh.readline()  # skip comment
-        for _ in range(n_atoms):
-            raw = fh.readline().decode(errors="replace").strip()
-            if not raw:
-                raise ValueError(
-                    f"Unexpected end of {input_xyz} while reading atom types"
-                )
-            elements.append(raw.split()[0])
-    if len(elements) != n_atoms:
+    return read_xyz_frame_by_offset(input_xyz, 0).elements
+
+
+def _bead_label(bead: int) -> str:
+    """``bead_id`` of bead number *bead* in an HDF5 run, e.g. ``"bead_03"``."""
+    return f"bead_{bead:02d}"
+
+
+def _bead_index(bead_id: str) -> int:
+    """Bead number of an HDF5 ``bead_id`` (inverse of :func:`_bead_label`).
+
+    Raises
+    ------
+    ValueError
+        If *bead_id* is not of the form ``bead_<number>``.
+    """
+    match = _BEAD_LABEL.match(str(bead_id))
+    if match is None:
+        raise ValueError(f"bead_id {bead_id!r} is not an HDF5 bead label (bead_<number>).")
+    return int(match.group(1))
+
+
+def _import_h5py():
+    """Return the ``h5py`` module, or raise with an install hint."""
+    try:
+        import h5py  # noqa: PLC0415
+    except ImportError as exc:
+        raise ImportError(
+            "h5py is required for HDF5 trajectories. Install with: uv add h5py"
+        ) from exc
+    return h5py
+
+
+def _check_atom_types(h5_path: Path, n_atoms: int, atom_types: list[str]) -> None:
+    """Raise if the HDF5 frames and ``input.xyz`` disagree on the atom count."""
+    if n_atoms != len(atom_types):
         raise ValueError(
-            f"{input_xyz}: expected {n_atoms} atom lines, got {len(elements)}"
+            f"{h5_path.name}: HDF5 has {n_atoms} atoms per frame but "
+            f"input.xyz has {len(atom_types)} atom-type entries."
         )
-    return elements
 
 
 def _derive_trajectory_id(h5_path: Path) -> str:
@@ -113,13 +147,7 @@ def build_coordinate_table_from_hdf5(
         Standard coordinate table (same schema as the xyz-backed table).
         ``byte_offset`` is set to ``-1`` (HDF5 frames are accessed by index).
     """
-    try:
-        import h5py
-    except ImportError as exc:
-        raise ImportError(
-            "h5py is required for HDF5 trajectories. Install with: uv add h5py"
-        ) from exc
-
+    h5py = _import_h5py()
     from confana.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
 
     h5_path = Path(h5_path)
@@ -132,12 +160,7 @@ def build_coordinate_table_from_hdf5(
         potential: np.ndarray = fh["potential"][()].astype(np.float32)
 
     n_frames, n_beads_total, n_atoms, _ = bead_pos_raw.shape
-
-    if n_atoms != len(atom_types):
-        raise ValueError(
-            f"{h5_path.name}: HDF5 has {n_atoms} atoms per frame but "
-            f"input.xyz has {len(atom_types)} atom-type entries."
-        )
+    _check_atom_types(h5_path, n_atoms, atom_types)
 
     logger.info(
         "HDF5 %s: %d frames, %d beads, %d atoms (trajectory_id=%r, source=%s)",
@@ -147,7 +170,7 @@ def build_coordinate_table_from_hdf5(
     dof_names = [d.name for d in dof_defs if d.enabled]
 
     if positions_source == "bead":
-        bead_labels: list[str | None] = [f"bead_{i:02d}" for i in range(n_beads_total)]
+        bead_labels: list[str | None] = [_bead_label(i) for i in range(n_beads_total)]
     else:
         bead_labels = [None]  # centroid: single pass
 
@@ -159,7 +182,7 @@ def build_coordinate_table_from_hdf5(
     local_frame_index_out = np.empty(n_rows, dtype=np.int64)
     global_frame_index_out = np.empty(n_rows, dtype=np.int64)
     step_number_out = np.empty(n_rows, dtype=np.int64)
-    byte_offset_out = np.full(n_rows, _SENTINEL_BYTE_OFFSET, dtype=np.int64)
+    byte_offset_out = np.full(n_rows, HDF5_BYTE_OFFSET, dtype=np.int64)
     atom_count_out = np.full(n_rows, n_atoms, dtype=np.int64)
     energy_out = np.empty(n_rows, dtype=np.float32)
 
@@ -226,6 +249,87 @@ def build_coordinate_table_from_hdf5(
     data["step_number"] = pd.array(step_number_out, dtype="Int64")
 
     return pd.DataFrame(data)
+
+
+# ---------------------------------------------------------------------------
+# Single-frame reading
+# ---------------------------------------------------------------------------
+
+
+class HDF5FrameReader:
+    """Reads single frames of one HDF5 run; the file stays open until closed.
+
+    Use as a context manager. Elements come from the run's ``input.xyz``
+    (see the module docstring); coordinates are float64 as stored.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the HDF5 file or its ``input.xyz`` is missing.
+    ValueError
+        If the file lacks ``bead_positions`` / ``positions`` or its atom count
+        differs from ``input.xyz``.
+    """
+
+    def __init__(self, h5_path: Path | str) -> None:
+        h5py = _import_h5py()
+        self.path = Path(h5_path)
+        self._elements = _read_atom_types_from_input_xyz(self.path)
+        self._trajectory_id = _derive_trajectory_id(self.path)
+        self._file = h5py.File(self.path, "r")
+        try:
+            missing = [name for name in ("bead_positions", "positions") if name not in self._file]
+            if missing:
+                raise ValueError(f"{self.path.name} has no {' or '.join(missing)} dataset.")
+            self._beads = self._file["bead_positions"]
+            self._centroid = self._file["positions"]
+            self._n_frames, self._n_beads, self._n_atoms = self._beads.shape[:3]
+            _check_atom_types(self.path, self._n_atoms, self._elements)
+        except Exception:
+            self._file.close()
+            raise
+
+    def read(self, frame_number: int, bead_id: str | None) -> FrameRecord:
+        """Return frame *frame_number* of bead *bead_id*, or of the centroid when ``None``.
+
+        Raises
+        ------
+        ValueError
+            If the frame or bead is out of range, or *bead_id* is not a bead label.
+        """
+        if not 0 <= frame_number < self._n_frames:
+            raise ValueError(
+                f"frame {frame_number} is out of range (the file has {self._n_frames} frames)."
+            )
+        if bead_id is None:
+            coords = self._centroid[frame_number]
+        else:
+            bead = _bead_index(bead_id)
+            if not 0 <= bead < self._n_beads:
+                raise ValueError(
+                    f"{bead_id} is out of range (the file has {self._n_beads} beads)."
+                )
+            coords = self._beads[frame_number, bead]
+        return FrameRecord(
+            source_file=str(self.path),
+            frame_number=frame_number,
+            byte_offset=HDF5_BYTE_OFFSET,
+            atom_count=self._n_atoms,
+            comment_line="",
+            elements=list(self._elements),
+            coords=np.asarray(coords, dtype=np.float64),
+            trajectory_id=self._trajectory_id,
+            bead_id=bead_id,
+        )
+
+    def close(self) -> None:
+        self._file.close()
+
+    def __enter__(self) -> HDF5FrameReader:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
 
 # ---------------------------------------------------------------------------

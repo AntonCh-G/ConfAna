@@ -1,157 +1,52 @@
 """Structure viewer support for standalone interactive HTML.
 
-Provides Python-side helpers that read raw XYZ frame text from disk and
-pre-compute one representative structure per histogram bin.  These are
-consumed by ``make_density_interactive`` when ``embed_xyz_payload: true``
-is set in the config.
+Provides the per-bin structures and metadata that ``make_density_interactive``
+embeds when ``embed_xyz_payload: true`` is set in the config.
 
 Design notes
 ------------
-* ``read_xyz_frame_text`` returns the raw multi-line text of a single XYZ
-  frame, suitable for direct embedding in the HTML or passing to 3Dmol.js
-  ``viewer.addModel(text, 'xyz')``.
 * ``build_bin_xyz_payloads`` and ``build_bin_frame_metadata`` both describe
   each bin's representative frame, taken from
   ``ConformationalMap.representatives``, so a bin's structure and metadata
   are always the same frame.  The JavaScript click handler then only needs an
   O(1) key lookup instead of scanning all frames.
-* A representative without a readable structure leaves its bin without one;
-  no structure is borrowed from another frame.
+* Structures are read through :mod:`confana.frame_source` (xyz or HDF5) and
+  aligned as arrays with ``align_frame``; the page receives them as XYZ text.
+  A frame that cannot be read stops the build; a representative that names no
+  structure leaves its bin without one, never borrowing another frame's.
 
 Public API
 ----------
-- ``read_xyz_frame_text``
-- ``align_xyz_to_reference``
+- ``align_frame``
 - ``build_bin_xyz_payloads``
 - ``build_bin_frame_metadata``
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from confana.density import ConformationalMap
+from confana.frame_source import names_frame, read_frames
+from confana.models import FrameRecord
 
 
 # ---------------------------------------------------------------------------
-# Frame text retrieval
+# Frame alignment and text
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _ParsedXYZ:
-    """Parsed XYZ payload."""
-
-    atom_count: int
-    comment: str
-    symbols: tuple[str, ...]
-    coords: np.ndarray
 
 
 _HYDROGEN_SYMBOLS = {"H", "D", "T"}
 
 
-def read_xyz_frame_text(
-    source_file: str | Path,
-    byte_offset: int,
-    atom_count: int,
-) -> str:
-    """Read one XYZ frame from *source_file* starting at *byte_offset*.
-
-    Opens the file in binary mode, seeks to the given byte position, reads
-    ``atom_count + 2`` lines (the atom-count header, the comment line, and
-    all atom records), and returns the decoded text.
-
-    Parameters
-    ----------
-    source_file:
-        Path to the xyz file.
-    byte_offset:
-        Byte position of the atom-count line for the desired frame (as
-        stored in the coordinate table's ``byte_offset`` column).
-    atom_count:
-        Number of atoms in the frame (used to determine how many lines to
-        read).
-
-    Returns
-    -------
-    str
-        Raw text of the frame (atom_count + 2 lines).
-
-    Raises
-    ------
-    ValueError
-        If no data is found at *byte_offset* or the header line cannot be
-        parsed as an integer.
-    IOError
-        If the file cannot be opened.
-    """
-    path = Path(source_file).resolve()
-    with open(path, "rb") as fh:
-        fh.seek(int(byte_offset))
-        lines = []
-        for _ in range(atom_count + 2):
-            line = fh.readline()
-            if not line:
-                break
-            lines.append(line)
-
-    if not lines:
-        raise ValueError(
-            f"No data at byte_offset={byte_offset} in {path}"
-        )
-
-    return b"".join(lines).decode("utf-8", errors="replace")
-
-
-def _parse_xyz_text(xyz_text: str) -> _ParsedXYZ:
-    """Parse raw XYZ text into symbols and coordinates."""
-    lines = xyz_text.splitlines()
-    if len(lines) < 2:
-        raise ValueError("Malformed XYZ payload: expected atom-count and comment lines.")
-
-    try:
-        atom_count = int(lines[0].strip())
-    except ValueError as exc:
-        raise ValueError("Malformed XYZ payload: invalid atom count line.") from exc
-
-    atom_lines = lines[2: 2 + atom_count]
-    if len(atom_lines) != atom_count:
-        raise ValueError(
-            f"Malformed XYZ payload: expected {atom_count} atom lines, found {len(atom_lines)}."
-        )
-
-    symbols: list[str] = []
-    coords = np.empty((atom_count, 3), dtype=np.float64)
-    for i, line in enumerate(atom_lines):
-        parts = line.split()
-        if len(parts) < 4:
-            raise ValueError(f"Malformed XYZ payload: atom line {i + 1} has fewer than 4 fields.")
-        symbols.append(parts[0])
-        try:
-            coords[i] = [float(parts[1]), float(parts[2]), float(parts[3])]
-        except ValueError as exc:
-            raise ValueError(
-                f"Malformed XYZ payload: atom line {i + 1} contains invalid coordinates."
-            ) from exc
-
-    return _ParsedXYZ(
-        atom_count=atom_count,
-        comment=lines[1],
-        symbols=tuple(symbols),
-        coords=coords,
-    )
-
-
-def _format_xyz_text(parsed: _ParsedXYZ, coords: np.ndarray) -> str:
-    """Serialise XYZ data using the original symbols and comment line."""
-    lines = [str(parsed.atom_count), parsed.comment]
-    for symbol, (x, y, z) in zip(parsed.symbols, coords):
+def _xyz_text(frame: FrameRecord) -> str:
+    """The frame as XYZ text, coordinates to 8 decimals: the form the page embeds."""
+    lines = [str(frame.atom_count), frame.comment_line]
+    for symbol, (x, y, z) in zip(frame.elements, frame.coords):
         lines.append(f"{symbol:<2s}  {x: .8f}  {y: .8f}  {z: .8f}")
     return "\n".join(lines) + "\n"
 
@@ -192,74 +87,67 @@ def _kabsch_rotation(reference_coords: np.ndarray, target_coords: np.ndarray) ->
     return v_mat @ correction @ wt_mat
 
 
-def align_xyz_to_reference(
-    xyz_text: str,
-    reference_xyz_text: str,
+def align_frame(
+    frame: FrameRecord,
+    reference: FrameRecord,
     atom_selection: str = "heavy",
-) -> str:
-    """Rigidly align one XYZ payload to a reference XYZ payload."""
-    reference = _parse_xyz_text(reference_xyz_text)
-    target = _parse_xyz_text(xyz_text)
+) -> FrameRecord:
+    """Return *frame* rigidly moved onto *reference* (Kabsch fit on the selected atoms).
 
-    if reference.atom_count != target.atom_count:
-        raise ValueError("Cannot align XYZ payloads with different atom counts.")
+    Every atom moves with the fit, in its original order.
 
-    reference_selection = _resolve_alignment_indices(reference.symbols, atom_selection)
-    target_selection = _resolve_alignment_indices(target.symbols, atom_selection)
+    Raises
+    ------
+    ValueError
+        If the frames' atom counts, selected-atom counts or selected element
+        orders differ, or *atom_selection* is not ``"heavy"`` / ``"all"``.
+    """
+    if reference.atom_count != frame.atom_count:
+        raise ValueError("Cannot align frames with different atom counts.")
+
+    reference_symbols = tuple(reference.elements)
+    target_symbols = tuple(frame.elements)
+    reference_selection = _resolve_alignment_indices(reference_symbols, atom_selection)
+    target_selection = _resolve_alignment_indices(target_symbols, atom_selection)
     if reference_selection.shape != target_selection.shape:
         raise ValueError(
-            "Cannot align XYZ payloads with different atom counts in the selected atom set."
+            "Cannot align frames with different atom counts in the selected atom set."
         )
 
-    reference_symbols = [reference.symbols[i].strip().upper() for i in reference_selection]
-    target_symbols = [target.symbols[i].strip().upper() for i in target_selection]
-    if reference_symbols != target_symbols:
+    if [reference_symbols[i].strip().upper() for i in reference_selection] != [
+        target_symbols[i].strip().upper() for i in target_selection
+    ]:
         descriptor = "heavy-atom" if atom_selection == "heavy" else "selected-atom"
         raise ValueError(
-            f"Cannot align XYZ payloads with different {descriptor} element order."
+            f"Cannot align frames with different {descriptor} element order."
         )
 
+    reference_coords = np.asarray(reference.coords, dtype=np.float64)
+    target_coords = np.asarray(frame.coords, dtype=np.float64)
     rotation = _kabsch_rotation(
-        reference.coords[reference_selection],
-        target.coords[target_selection],
+        reference_coords[reference_selection],
+        target_coords[target_selection],
     )
-    ref_centroid = reference.coords[reference_selection].mean(axis=0)
-    tgt_centroid = target.coords[target_selection].mean(axis=0)
-    transformed = (target.coords - tgt_centroid) @ rotation + ref_centroid
+    ref_centroid = reference_coords[reference_selection].mean(axis=0)
+    tgt_centroid = target_coords[target_selection].mean(axis=0)
+    transformed = (target_coords - tgt_centroid) @ rotation + ref_centroid
+    return replace(frame, coords=transformed)
 
-    return _format_xyz_text(target, transformed)
 
-
-def _resolve_alignment_reference_text(
-    df: pd.DataFrame,
-    reference: str,
-) -> str:
-    """Return the deterministic XYZ payload used as the alignment reference."""
+def _alignment_reference(df: pd.DataFrame, reference: str) -> FrameRecord:
+    """Return the deterministic frame every structure is aligned onto."""
     if reference != "earliest_frame":
         raise ValueError(
             f"Unsupported alignment reference '{reference}'. "
             "Valid choices: ['earliest_frame']"
         )
-
-    required = ["source_file", "byte_offset", "atom_count"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in DataFrame: {missing}")
-
-    mask = pd.Series(True, index=df.index)
-    for column in required:
-        mask = mask & df[column].notna()
-
-    eligible = df.loc[mask]
-    if eligible.empty:
+    eligible = np.flatnonzero(names_frame(df))
+    if len(eligible) == 0:
         raise ValueError("No eligible structures available for alignment reference.")
-
-    row = eligible.iloc[0]
-    return read_xyz_frame_text(
-        row["source_file"],
-        int(row["byte_offset"]),
-        int(row["atom_count"]),
-    )
+    (frame,) = read_frames(df, [int(eligible[0])])
+    if frame is None:  # unreachable: eligible rows name a frame
+        raise ValueError("The alignment reference row names no frame.")
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -290,18 +178,19 @@ def build_bin_xyz_payloads(
     conf_map: ConformationalMap,
     alignment: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Read the XYZ structure of each occupied bin's representative frame.
+    """Return the XYZ structure of each occupied bin's representative frame.
 
     The representative is :attr:`ConformationalMap.representatives`, the same
-    frame :func:`build_bin_frame_metadata` describes. A representative without
-    a readable structure (no ``source_file`` / ``byte_offset`` / ``atom_count``
-    value, or a file that cannot be read) leaves its bin without a structure.
+    frame :func:`build_bin_frame_metadata` describes. Frames are read through
+    :func:`confana.frame_source.read_frames`, so xyz and HDF5 rows both work.
+    A representative that names no structure (coordinate-only input) leaves
+    its bin without one.
 
     Parameters
     ----------
     conf_map:
-        Map of the coordinate pair; its table must have ``source_file``,
-        ``byte_offset`` and ``atom_count`` columns.
+        Map of the coordinate pair; its table must have ``source_file`` and
+        ``byte_offset`` columns.
     alignment:
         Optional alignment config dict.  Alignment is on by default: payloads
         are rigidly aligned to the reference structure using the configured
@@ -312,52 +201,32 @@ def build_bin_xyz_payloads(
     -------
     dict[str, str]
         Mapping of ``"xi_yi"`` bin keys to XYZ text strings.
+
+    Raises
+    ------
+    ValueError
+        If a representative frame cannot be read (see
+        :func:`~confana.frame_source.read_frames`), or alignment fails.
     """
     df = conf_map.table
-    required = ["source_file", "byte_offset", "atom_count"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in DataFrame: {missing}")
-
-    bin_best = conf_map.representatives
-    if not bin_best:
-        return {}
+    bins = conf_map.representatives
+    frames = read_frames(df, list(bins.values())) if bins else []
+    by_key = {
+        f"{xi}_{yi}": frame for (xi, yi), frame in zip(bins, frames) if frame is not None
+    }
 
     alignment_cfg = alignment or {}
-    align_enabled = bool(alignment_cfg.get("enabled", True))
-    alignment_reference = str(alignment_cfg.get("reference", "earliest_frame"))
-    atom_selection = str(alignment_cfg.get("atom_selection", "heavy"))
-
-    source_files = df["source_file"].to_numpy(dtype=object)
-    byte_offsets = pd.to_numeric(df["byte_offset"], errors="coerce").to_numpy(dtype=float)
-    atom_counts = pd.to_numeric(df["atom_count"], errors="coerce").to_numpy(dtype=float)
-
-    payloads: dict[str, str] = {}
-    for (xi, yi), i in bin_best.items():
-        sf = source_files[i]
-        bo = byte_offsets[i]
-        ac = atom_counts[i]
-        if pd.isna(sf) or pd.isna(bo) or pd.isna(ac):
-            continue
-        try:
-            text = read_xyz_frame_text(sf, int(bo), int(ac))
-        except (ValueError, IOError, OSError):
-            continue
-        payloads[f"{xi}_{yi}"] = text
-
-    # The reference is read only when there is something to align; if it
-    # cannot be read while bin structures could, that is a real error.
-    if align_enabled and payloads:
-        reference_xyz_text = _resolve_alignment_reference_text(
-            df,
-            reference=alignment_reference,
+    if bool(alignment_cfg.get("enabled", True)) and by_key:
+        reference = _alignment_reference(
+            df, reference=str(alignment_cfg.get("reference", "earliest_frame"))
         )
-        payloads = {
-            key: align_xyz_to_reference(text, reference_xyz_text, atom_selection=atom_selection)
-            for key, text in payloads.items()
+        atom_selection = str(alignment_cfg.get("atom_selection", "heavy"))
+        by_key = {
+            key: align_frame(frame, reference, atom_selection=atom_selection)
+            for key, frame in by_key.items()
         }
 
-    return payloads
+    return {key: _xyz_text(frame) for key, frame in by_key.items()}
 
 
 def build_bin_frame_metadata(

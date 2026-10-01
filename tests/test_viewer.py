@@ -11,13 +11,9 @@ import pandas as pd
 import pytest
 
 from confana.density import DensitySettings, build_conformational_map
-from confana.models import CoordinatePair
-from confana.viewer import (
-    align_xyz_to_reference,
-    build_bin_frame_metadata,
-    build_bin_xyz_payloads,
-    read_xyz_frame_text,
-)
+from confana.models import CoordinatePair, FrameRecord
+from confana.viewer import align_frame, build_bin_frame_metadata, build_bin_xyz_payloads
+from tests.hdf5_runs import hdf5_table, write_hdf5_run
 
 
 # ---------------------------------------------------------------------------
@@ -78,59 +74,20 @@ def _rmsd(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
 
 
-# ---------------------------------------------------------------------------
-# read_xyz_frame_text
-# ---------------------------------------------------------------------------
-
-
-def test_read_xyz_frame_text_round_trip(tmp_path):
-    """Read back the exact text written to the file."""
-    frame_lines = _minimal_xyz_frame(3)
-    xyz_file = tmp_path / "test.xyz"
-    offsets = _write_xyz(xyz_file, [frame_lines])
-
-    text = read_xyz_frame_text(xyz_file, offsets[0], atom_count=3)
-    returned_lines = [l.strip() for l in text.strip().splitlines()]
-
-    # Header line should be atom count
-    assert returned_lines[0] == "3"
-    # Comment line
-    assert returned_lines[1] == "comment"
-    # Atom lines
-    assert len(returned_lines) == 3 + 2
-
-
-def test_read_xyz_frame_text_second_frame(tmp_path):
-    """Correctly seeks to the second frame, not the first."""
-    frame0 = _minimal_xyz_frame(2)
-    frame1 = [str(2), "frame1_comment", "C  1.0  0.0  0.0", "O  2.0  0.0  0.0"]
-    xyz_file = tmp_path / "multi.xyz"
-    offsets = _write_xyz(xyz_file, [frame0, frame1])
-
-    text = read_xyz_frame_text(xyz_file, offsets[1], atom_count=2)
-    assert "frame1_comment" in text
-
-
-def test_read_xyz_frame_text_bad_offset_raises(tmp_path):
-    """Seeking past EOF should raise ValueError."""
-    xyz_file = tmp_path / "tiny.xyz"
-    xyz_file.write_text("2\ncomment\nC 0 0 0\nO 1 0 0\n", encoding="utf-8")
-
-    with pytest.raises(ValueError):
-        read_xyz_frame_text(xyz_file, byte_offset=10_000, atom_count=2)
-
-
-def test_read_xyz_frame_text_missing_file_raises(tmp_path):
-    with pytest.raises((FileNotFoundError, OSError)):
-        read_xyz_frame_text(tmp_path / "nonexistent.xyz", 0, 2)
+def _frame(symbols: list[str], coords, comment: str = "comment") -> FrameRecord:
+    coords = np.asarray(coords, dtype=np.float64)
+    return FrameRecord(
+        source_file="mem.xyz", frame_number=0, byte_offset=0, atom_count=len(symbols),
+        comment_line=comment, elements=list(symbols), coords=coords,
+    )
 
 
 # ---------------------------------------------------------------------------
-# align_xyz_to_reference
+# align_frame
 # ---------------------------------------------------------------------------
 
 
-def test_align_xyz_to_reference_aligns_heavy_atoms_and_hydrogens():
+def test_align_frame_aligns_heavy_atoms_and_hydrogens():
     """Rigid alignment uses heavy atoms for the fit and moves hydrogens too."""
     symbols = ["C", "C", "O", "H", "H"]
     reference_coords = np.asarray(
@@ -154,13 +111,13 @@ def test_align_xyz_to_reference_aligns_heavy_atoms_and_hydrogens():
     translation = np.asarray([3.5, -2.0, 1.25], dtype=np.float64)
     target_coords = reference_coords @ rotation.T + translation
 
-    aligned_text = align_xyz_to_reference(
-        _xyz_text_from_symbols_coords(symbols, target_coords, comment="target"),
-        _xyz_text_from_symbols_coords(symbols, reference_coords, comment="reference"),
+    aligned = align_frame(
+        _frame(symbols, target_coords, comment="target"),
+        _frame(symbols, reference_coords, comment="reference"),
         atom_selection="heavy",
     )
 
-    aligned_symbols, aligned_coords = _parse_xyz_symbols_coords(aligned_text)
+    aligned_symbols, aligned_coords = aligned.elements, aligned.coords
     heavy_idx = np.asarray([0, 1, 2], dtype=np.int64)
 
     assert aligned_symbols == symbols
@@ -168,26 +125,20 @@ def test_align_xyz_to_reference_aligns_heavy_atoms_and_hydrogens():
     assert _rmsd(aligned_coords, reference_coords) < 1e-6
 
 
-def test_align_xyz_to_reference_atom_count_mismatch_raises():
-    ref_text = _xyz_text_from_symbols_coords(["C", "O"], np.asarray([[0, 0, 0], [1, 0, 0]], dtype=float))
-    target_text = _xyz_text_from_symbols_coords(["C"], np.asarray([[0, 0, 0]], dtype=float))
+def test_align_frame_atom_count_mismatch_raises():
+    reference = _frame(["C", "O"], [[0, 0, 0], [1, 0, 0]])
+    target = _frame(["C"], [[0, 0, 0]])
 
     with pytest.raises(ValueError, match="different atom counts"):
-        align_xyz_to_reference(target_text, ref_text, atom_selection="heavy")
+        align_frame(target, reference, atom_selection="heavy")
 
 
-def test_align_xyz_to_reference_heavy_atom_sequence_mismatch_raises():
-    ref_text = _xyz_text_from_symbols_coords(
-        ["C", "O", "H"],
-        np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
-    )
-    target_text = _xyz_text_from_symbols_coords(
-        ["C", "N", "H"],
-        np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
-    )
+def test_align_frame_heavy_atom_sequence_mismatch_raises():
+    reference = _frame(["C", "O", "H"], [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    target = _frame(["C", "N", "H"], [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
 
     with pytest.raises(ValueError, match="heavy-atom element order"):
-        align_xyz_to_reference(target_text, ref_text, atom_selection="heavy")
+        align_frame(target, reference, atom_selection="heavy")
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +230,12 @@ def test_build_bin_xyz_payloads_missing_columns_raises():
     df = pd.DataFrame({"carboxyl_plane": [1.0], "ester_plane": [1.0]})
     edges = np.linspace(0, 180, 5)
 
-    with pytest.raises(ValueError, match="Missing columns"):
+    with pytest.raises(ValueError, match="source_file.*byte_offset"):
         build_bin_xyz_payloads(_plane_map(df, edges))
 
 
-def test_build_bin_xyz_payloads_unreadable_skipped(tmp_path):
-    """Unreadable source files are skipped without raising."""
+def test_build_bin_xyz_payloads_unreadable_frame_raises(tmp_path):
+    """A frame the table names but that cannot be read stops the build."""
     df = pd.DataFrame(
         {
             "carboxyl_plane": [45.0],
@@ -296,8 +247,8 @@ def test_build_bin_xyz_payloads_unreadable_skipped(tmp_path):
     )
     edges = np.linspace(0, 180, 5)
 
-    result = build_bin_xyz_payloads(_plane_map(df, edges))
-    assert result == {}
+    with pytest.raises(ValueError, match="does_not_exist.xyz"):
+        build_bin_xyz_payloads(_plane_map(df, edges))
 
 
 @pytest.mark.parametrize(
@@ -434,3 +385,21 @@ def test_bin_structure_and_metadata_come_from_one_frame(tmp_path):
     assert "0_0" not in payloads
     assert metadata["1_1"]["frame_id"] == 2
     assert payloads["1_1"].splitlines()[1] == "frame-b"
+
+
+def test_hdf5_map_gets_one_structure_per_occupied_bin(tmp_path):
+    """HDF5 rows (byte_offset -1) are read by frame and bead, not skipped."""
+    h5_path, _, _ = write_hdf5_run(tmp_path / "s0")
+    table = hdf5_table(h5_path)
+    pair = CoordinatePair(
+        name="dist", x_col="d_co", y_col="d_oh", x_label="C-O", y_label="O-H", title="t",
+        x_domain=(0.0, 10.0), y_domain=(0.0, 10.0),
+    )
+    settings = DensitySettings(bins=4, x_range=(0.0, 10.0), y_range=(0.0, 10.0))
+    conf_map = build_conformational_map(table, pair, settings)
+
+    payloads = build_bin_xyz_payloads(conf_map)  # aligned onto the earliest frame
+
+    assert set(payloads) == {f"{xi}_{yi}" for xi, yi in conf_map.representatives}
+    for text in payloads.values():
+        assert [line.split()[0] for line in text.splitlines()[2:]] == ["C", "O", "H"]

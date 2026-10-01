@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 import numpy as np
+import numpy.typing as npt
 
 from confana.models import FrameIndex, FrameIndexEntry, FrameRecord
 
@@ -92,11 +93,12 @@ def _parse_xyz_block(
     source_file: str,
     byte_offset: int,
     frame_number: int,
+    dtype: npt.DTypeLike = np.float32,
 ) -> FrameRecord:
     """Parse ``atom_count + 2`` raw binary lines into a FrameRecord.
 
     ``lines[0]`` must be the atom-count line, ``lines[1]`` the comment line,
-    and ``lines[2:]`` the atom records.
+    and ``lines[2:]`` the atom records. Coordinates are stored as *dtype*.
 
     Raises
     ------
@@ -157,7 +159,7 @@ def _parse_xyz_block(
         atom_count=atom_count,
         comment_line=comment_line,
         elements=elements,
-        coords=np.array(coords_list, dtype=np.float32),
+        coords=np.array(coords_list, dtype=dtype),
         energy=meta["energy"],
         step_number=meta["step_number"],
         bead_comment=meta["bead_comment"],
@@ -495,6 +497,8 @@ def iter_xyz_frames(
 def read_xyz_frame_by_offset(
     path: str | Path,
     byte_offset: int,
+    *,
+    dtype: npt.DTypeLike = np.float32,
 ) -> FrameRecord:
     """Open the file, seek to ``byte_offset``, and parse one frame.
 
@@ -504,6 +508,9 @@ def read_xyz_frame_by_offset(
         Path to the xyz file.
     byte_offset:
         Byte position of the atom-count line for the desired frame.
+    dtype:
+        Coordinate dtype. float32 matches the streamed frames; float64 keeps
+        every digit the file holds.
 
     Returns
     -------
@@ -536,7 +543,7 @@ def read_xyz_frame_by_offset(
             lines.append(fh.readline())
 
     # Determine frame_number from byte_offset — unknown here, use -1 as sentinel
-    return _parse_xyz_block(lines, str(path), byte_offset, frame_number=-1)
+    return _parse_xyz_block(lines, str(path), byte_offset, frame_number=-1, dtype=dtype)
 
 
 def read_xyz_frame(

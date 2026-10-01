@@ -106,6 +106,12 @@ How the standalone HTML pages behave and which `plots.interactive` settings cont
     computer or in an app that runs web pages. The iPhone Files app does this: its
     preview runs no scripts and also hides `<noscript>`, so the picture is plain page
     content that the page's first script hides. Everyone else sees only the app.
+- Each embedded structure is read from its frame's own trajectory file, xyz (by byte
+  offset) or HDF5 (by frame and bead), so HDF5 runs get structures too. If a file named
+  in the coordinate table has moved, or a frame is broken or has a different atom count,
+  the build stops with an error naming the frame; it does not quietly leave bins empty.
+  The page stores each atom's element and x, y, z (8 decimals); extra per-atom columns of
+  an extended xyz file are not kept.
 - Every embedded structure is rigidly rotated onto one reference (the earliest frame,
   fitted on heavy atoms), so structures from different bins face the same way and can be
   compared. This is on by default; set `plots.interactive.alignment.enabled: false` to show

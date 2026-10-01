@@ -77,7 +77,7 @@ class FrameIndex:
 
 @dataclass
 class FrameRecord:
-    """One parsed frame from an xyz file, with coordinates and metadata.
+    """One parsed frame (from an xyz or HDF5 trajectory), with coordinates and metadata.
 
     Attributes set by the I/O layer may be None until resolved by the calling
     code (e.g., trajectory_id and bead_id are filled in by load_xyz_files).
@@ -93,7 +93,9 @@ class FrameRecord:
     """Atomic element symbols, length == atom_count."""
 
     coords: np.ndarray
-    """Coordinate array, shape (atom_count, 3), dtype float32, units angstrom."""
+    """Coordinate array, shape (atom_count, 3), units angstrom: float32 when
+    streamed for the coordinate table, float64 when read one frame at a time
+    (``confana.frame_source.read_frames``)."""
 
     energy: Optional[float] = None
     """Potential energy parsed from the comment line; None if not present."""

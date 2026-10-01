@@ -58,7 +58,8 @@ if `dt` is set; activation free-energy barriers only if both `dt` and `temperatu
 
 ## Architecture
 Layers, each in its own module under `confana/`:
-1. input adapters (`io_xyz`, `io_hdf5`, `io_coordinates`)
+1. input adapters (`io_xyz`, `io_hdf5`, `io_coordinates`), and `frame_source`, which reads
+   the frame a coordinate-table row names through `io_xyz` or `io_hdf5`
 2. geometry and coordinate extraction (`geometry`, `coordinates`)
 3. state assignment (`states`)
 4. transition analysis (`transitions`)

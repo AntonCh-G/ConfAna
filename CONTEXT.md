@@ -61,7 +61,7 @@ A byte-offset index built by scanning each xyz file once. Enables O(1) random ac
 ## Interactive Map Concepts
 
 **Representative frame**
-The one frame shown for a density bin when the page embeds structures (`interactive.embed_xyz_payload: true`): the sampled frame closest to the bin centre, ties going to the earlier frame in the coordinate table. It is chosen only among the frames the bin counts, so every bin with frames has one and an empty bin has none. The same frame gives the bin's structure, its metadata and its pin; a bin never shows another frame's structure. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames. Without embedded structures the page holds every frame and pins the frame nearest the click point instead.
+The one frame shown for a density bin when the page embeds structures (`interactive.embed_xyz_payload: true`): the sampled frame closest to the bin centre, ties going to the earlier frame in the coordinate table. It is chosen only among the frames the bin counts, so every bin with frames has one and an empty bin has none. The same frame gives the bin's structure, its metadata and its pin; a bin never shows another frame's structure. The structure is read from the frame's own trajectory file (xyz or HDF5); if a frame the table names cannot be read, the page build stops with an error naming it, while a frame that names no structure (coordinate-only input) simply has none. Each coordinate-pair page picks its own representatives, so the same bin region on two pages usually has different representative frames. Without embedded structures the page holds every frame and pins the frame nearest the click point instead.
 
 **Preview**
 The one bin currently shown in the side panel, with its representative frame and values. It is passing: the next bin pointed at replaces it. With a mouse, hovering a bin previews it; on a touch screen, tapping a bin previews it.
@@ -129,14 +129,14 @@ A PIMD trajectory stored as a single HDF5 file (``trajectory.hdf5``) with datase
 - `potential` — `(n_frames,)` float64 eV
 
 Multiple independent HDF5 runs (e.g. `s0`, `s1`, …) each become one `trajectory_id`.
-All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"`, `"bead_01"`, …. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`). `byte_offset` is set to `-1` (sentinel) in all HDF5-sourced rows; structure retrieval uses `source_file` + `frame_number` + `bead_id` instead.
+All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"`, `"bead_01"`, …. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`), which must be a complete xyz frame (atom count, comment, one `symbol x y z` line per atom). `byte_offset` is set to `-1` (sentinel, `io_hdf5.HDF5_BYTE_OFFSET`) in all HDF5-sourced rows; a frame's structure is read from `source_file` by `frame_number` + `bead_id` instead (`bead_positions[frame, bead]`, or `positions[frame]` for a centroid row with no `bead_id`).
 
 Configured via `data.format: hdf5` and `data.positions_source: bead | centroid` (default `bead`). `trajectory_id` is derived from the parent directory name of each HDF5 file.
 
 ## Architecture Notes
 
 The pipeline is layered with a data-model boundary:
-1. **Input adapters** — `io_xyz.py` (xyz files), `io_hdf5.py` (HDF5 PIMD files), `io_coordinates.py` (precomputed tables)
+1. **Input adapters** — `io_xyz.py` (xyz files), `io_hdf5.py` (HDF5 PIMD files), `io_coordinates.py` (precomputed tables); `frame_source.py` reads the frame a coordinate-table row names, through the xyz or HDF5 reader
 2. **Geometry / coordinate engine** — `geometry.py`, `coordinates.py`
 3. **State assignment** — `states.py`
 4. **Transition analysis** — `transitions.py`

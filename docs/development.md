@@ -4,6 +4,8 @@
 
 - `confana/geometry.py`: reusable geometry primitives
 - `confana/io_xyz.py`: streaming XYZ ingestion and indexed random access
+- `confana/io_hdf5.py`: HDF5 PIMD ingestion and single-frame reading (`HDF5FrameReader`)
+- `confana/frame_source.py`: reads the frame a coordinate-table row names (xyz by byte offset, HDF5 by frame and bead)
 - `confana/io_coordinates.py`: coordinate-table ingestion and cache-aware loading
 - `confana/coordinates.py`: plane/dihedral coordinate extraction
 - `confana/density.py`: the conformational map of a coordinate pair (bins, counts, bin lookup, representative frames) and the population free-energy surface
