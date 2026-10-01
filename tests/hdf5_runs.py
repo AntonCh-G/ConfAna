@@ -8,30 +8,47 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from confana.io_hdf5 import build_coordinate_table_from_hdf5
-from confana.models import DoFDefinition
+_ELEMENTS = ("C", "O", "H")
 
 
-def write_hdf5_run(sim_dir: Path, n_frames: int = 5, n_beads: int = 2):
-    """Write ``<sim_dir>/hdf5/trajectory.hdf5`` and its ``input.xyz`` (C, O, H)."""
+def write_hdf5_run(sim_dir: Path, n_frames: int = 5, n_beads: int = 2, n_atoms: int = 3):
+    """Write ``<sim_dir>/hdf5/trajectory.hdf5`` and its ``input.xyz``.
+
+    Atoms cycle through C, O, H; positions are random, the potential is
+    ``-frame`` eV. Returns ``(h5_path, bead_positions, centroid)``.
+    """
     h5py = pytest.importorskip("h5py")
     (sim_dir / "hdf5").mkdir(parents=True)
     h5_path = sim_dir / "hdf5" / "trajectory.hdf5"
-    beads = np.random.default_rng(0).standard_normal((n_frames, n_beads, 3, 3))
+    beads = np.random.default_rng(0).standard_normal((n_frames, n_beads, n_atoms, 3))
     centroid = beads.mean(axis=1)
     with h5py.File(h5_path, "w") as fh:
         fh.create_dataset("bead_positions", data=beads)
         fh.create_dataset("positions", data=centroid)
-        fh.create_dataset("potential", data=np.zeros(n_frames))
-    (sim_dir / "input.xyz").write_text("3\ninput\nC 0 0 0\nO 0 0 0\nH 0 0 0\n")
+        fh.create_dataset("potential", data=-np.arange(n_frames, dtype=float))
+    elements = [_ELEMENTS[i % len(_ELEMENTS)] for i in range(n_atoms)]
+    (sim_dir / "input.xyz").write_text(
+        f"{n_atoms}\ninput\n" + "".join(f"{el} 0 0 0\n" for el in elements)
+    )
     return h5_path, beads, centroid
 
 
 def hdf5_table(h5_path: Path, positions_source: str = "bead") -> pd.DataFrame:
-    """Coordinate table of the run, exactly as the HDF5 input adapter builds it."""
-    dofs = [
-        DoFDefinition(name=name, type="distance", atoms=atoms, label=name, domain=[0.0, 10.0],
-                      enabled=True)
-        for name, atoms in (("d_co", [0, 1]), ("d_oh", [1, 2]))
-    ]
-    return build_coordinate_table_from_hdf5(h5_path, dofs, positions_source=positions_source)
+    """Coordinate table of the run, built by the coordinate-table pipeline."""
+    from confana.coordinate_table import load_or_build_coordinate_table_from_config
+
+    config = {
+        "run_dir": str(Path(h5_path).parents[2] / "hdf5_table_run"),
+        "data": {
+            "format": "hdf5",
+            "path_pattern": str(h5_path),
+            "positions_source": positions_source,
+        },
+        "dof": [
+            {"name": name, "type": "distance", "atoms": atoms, "label": name,
+             "domain": [0.0, 10.0]}
+            for name, atoms in (("d_co", [0, 1]), ("d_oh", [1, 2]))
+        ],
+    }
+    table, _ = load_or_build_coordinate_table_from_config(config)
+    return table

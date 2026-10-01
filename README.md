@@ -84,8 +84,11 @@ sensitive the result is to `eps` and `min_samples`.
 ## PIMD trajectories
 
 For path-integral MD, give one xyz file per bead (for example `my_run.pos_00.xyz`,
-`my_run.pos_01.xyz`, …). ConfAna reads the trajectory and bead IDs from the file names and keeps
-beads separate for clustering and transitions. Start from
+`my_run.pos_01.xyz`, …). ConfAna reads the trajectory and bead IDs from the file names, with the
+regular expressions `data.trajectory_id_pattern` and `data.bead_id_pattern`, and keeps beads separate
+for clustering and transitions. A file the patterns give no ID for stops the run with an error.
+PIMD runs stored as HDF5 (`data.format: hdf5`) are read too; see
+[docs/configuration.md](docs/configuration.md#input-data). Start from
 [examples/pimd_template.yaml](examples/pimd_template.yaml); no PIMD data ships with the repo.
 
 ## Using the interactive page

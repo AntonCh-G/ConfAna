@@ -17,8 +17,9 @@ Design notes
 ------------
 * Based solely on ``time.perf_counter()`` — no external dependencies.
 * Thread-unsafe; intended for single-threaded benchmarking only.
-* The ``_timer`` parameter in production functions defaults to ``None``;
-  all guards are ``if _timer is not None:`` so overhead is zero in normal runs.
+* The ``timer`` parameter of
+  ``confana.coordinate_table.load_or_build_coordinate_table`` defaults to
+  ``None``, and then no stage is timed, so normal runs pay nothing.
 * This module has no scientific logic and can be deleted without affecting results.
 """
 

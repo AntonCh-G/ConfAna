@@ -8,6 +8,7 @@ module intentionally has no plotting or I/O dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
@@ -80,7 +81,8 @@ class FrameRecord:
     """One parsed frame (from an xyz or HDF5 trajectory), with coordinates and metadata.
 
     Attributes set by the I/O layer may be None until resolved by the calling
-    code (e.g., trajectory_id and bead_id are filled in by load_xyz_files).
+    code (e.g., trajectory_id and bead_id come from the coordinate-table row the
+    frame is read for; see ``confana.frame_source``).
     """
 
     source_file: str
@@ -107,16 +109,69 @@ class FrameRecord:
     """Bead index parsed from comment line (keyword 'Bead:'), for cross-validation."""
 
     trajectory_id: Optional[str] = None
-    """Derived from filename; set by load_xyz_files."""
+    """Trajectory the frame belongs to; None until a caller sets it."""
 
     bead_id: Optional[str] = None
-    """Derived from filename; set by load_xyz_files. None for non-PIMD files."""
+    """PIMD bead of the frame; None for non-PIMD frames or until a caller sets it."""
 
     local_frame_index: int = 0
     """0-based frame position within the source file."""
 
     global_frame_index: int = 0
     """0-based frame position across all files in the current run."""
+
+
+# ---------------------------------------------------------------------------
+# Trajectory sources (what the trajectory readers hand the coordinate-table build)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrajectorySource:
+    """One trajectory file as a reader describes it, before any frame is read.
+
+    A file holds one or more *streams*: ordered runs of frames read side by
+    side. An xyz file is one stream; an HDF5 PIMD file holds one stream per
+    bead, or one centroid stream.
+    """
+
+    path: Path
+    """Absolute path of the file."""
+
+    bead_ids: tuple[Optional[str], ...]
+    """``bead_id`` of each stream, in stream order (None: no bead)."""
+
+    n_frames: int
+    """Frames per stream."""
+
+    atom_count: int
+    """Atoms per frame (the same for every frame)."""
+
+
+@dataclass
+class FrameBlock:
+    """Consecutive frames ``frame_number[0] …`` of every stream of one source."""
+
+    coords: np.ndarray
+    """float32, shape ``(n_frames, n_streams, atom_count, 3)``, angstrom."""
+
+    frame_number: np.ndarray
+    """int64, shape ``(n_frames,)``: 0-based frame numbers in the file."""
+
+    byte_offset: np.ndarray
+    """int64, shape ``(n_frames,)``: xyz byte offsets, or ``io_hdf5.HDF5_BYTE_OFFSET``."""
+
+    step_number: np.ndarray
+    """int64, shape ``(n_frames,)``: MD step numbers (0 where missing)."""
+
+    step_missing: np.ndarray
+    """bool, shape ``(n_frames,)``: True where the step number is unknown."""
+
+    energy: np.ndarray
+    """float32, shape ``(n_frames,)``: potential energy, NaN where unknown."""
+
+    elements: list[str]
+    """Element symbols of the block's first frame."""
 
 
 # ---------------------------------------------------------------------------

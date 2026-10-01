@@ -54,4 +54,4 @@ def test_all_phases_run_on_the_current_config_schema(tmp_path, capsys):
     assert "stale" not in out                                         # phase B was a cache hit
     assert "all 2 DoF" in out
     assert "Benchmark complete." in out
-    assert (tmp_path / "run" / ".bench" / "coordinates.npz").exists()
+    assert len(list((tmp_path / "run" / ".bench").glob("*__coordinates.npz"))) == 1

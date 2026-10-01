@@ -11,8 +11,8 @@ A named scalar quantity computed per frame. Defined in the config `dof:` list wi
 - `dihedral` — signed torsion angle in `[-180, 180)`, defined by 4 atom indices
 - `distance` — interatomic distance in Å, defined by 2 atom indices
 - `angle` (bond angle) — angle in degrees, defined by 3 atom indices
-- `collective` — linear combination or PCA projection of other DoF (stub — not yet implemented)
-- `external` — value loaded from an external table by `frame_id` (stub — not yet implemented)
+- `collective` — linear combination or PCA projection of other DoF (not implemented: a config that uses it is an error)
+- `external` — value loaded from an external table by `frame_id` (not implemented: a config that uses it is an error)
 
 **CoordinatePair**
 A named 2D analysis space pairing two DoF. Drives density plotting, clustering, transition analysis, and interactive output. Key properties:
@@ -24,6 +24,10 @@ A named 2D analysis space pairing two DoF. Drives density plotting, clustering, 
 
 **Coordinate table**
 The central data structure passed between all pipeline stages. A `pd.DataFrame` with one row per frame. Required metadata columns: `frame_id`, `source_file`, `trajectory_id`, `bead_id`, `frame_number`, `byte_offset`, `atom_count`, `comment_line`, `local_frame_index`, `global_frame_index`. DoF value columns are added dynamically from the config.
+Built by one pipeline for every input format (`coordinate_table.py`): discover the files, apply the trajectory id rule, check each trajectory's cache, cut to `frame_range` and `bond_break`, compute the DoF values, apply the coordinate shifts, reset the state columns, validate the schema. Only reading frames differs between xyz and HDF5. `frame_id` is the row number of the whole table, so it shifts when files or `frame_range` change.
+
+**Trajectory**
+The files that share one `trajectory_id`; their frames are concatenated in file-name order, and transitions run across them. The one id rule: group 1 of `data.trajectory_id_pattern`, searched in the file name without its extension; with no pattern, the folder holding the file (for HDF5, the simulation folder above `hdf5/`). `bead_id` works the same way with `data.bead_id_pattern`; no pattern means no bead. A pattern without a capture group, or one that gives no id for a matched file, is an error.
 
 **State column**
 A string column `state_{pair.name}` added by the clustering step (e.g., `state_dihedral`). Contains DBSCAN cluster labels. NA = noise / unassigned. Not present in the coordinate table cache — added by `assign_conformer_states`.
@@ -56,7 +60,7 @@ The Arrhenius prefactor for rate-derived barrier estimates, configured explicitl
 Each bead is a separate ordered xyz trajectory sharing the same trajectory_id. Transitions are analyzed per-bead and then averaged across beads. Bead identity is preserved throughout unless explicit averaging is configured.
 
 **Frame index**
-A byte-offset index built by scanning each xyz file once. Enables O(1) random access to any frame by seeking to `byte_offset`. Cached to disk as `.frameindex.npz` alongside the source file (or in `cache.index_cache_dir`).
+A byte-offset index built by scanning each xyz file once. Enables O(1) random access to any frame by seeking to `byte_offset`. Cached to disk as `{file}.frameindex.npz` alongside the source file, or as `{file}.{hash of its path}.frameindex.npz` in `cache.index_cache_dir`.
 
 ## Interactive Map Concepts
 
@@ -85,8 +89,7 @@ The on-map sign of the preview on a touch screen: an outline of the previewed bi
 **`run_dir`** (required, top-level)
 Single root directory for all outputs and caches for a given run. Missing or null = hard validation error at startup. Derived paths:
 - plots → `{run_dir}/plots/`
-- trajectory cache → `{run_dir}/.cache/` (overridable via `cache.trajectory_cache_dir`)
-- coordinate table cache → `{run_dir}/coordinates_angles.npz` (overridable via `cache.coordinate_table_path`)
+- coordinate-table cache, one NPZ per trajectory → `{run_dir}/.cache/` (overridable via `cache.trajectory_cache_dir`; `cache.coordinate_table_path` is no longer used and is an error)
 
 **`plots:`** block
 All rendering settings in one place: `dpi`, `density`, `transitions`, `interactive`. Replaces the old scattered `density:`, `transitions_plot:`, and `interactive:` top-level keys plus `dpi` in `outputs:`.
@@ -131,13 +134,13 @@ A PIMD trajectory stored as a single HDF5 file (``trajectory.hdf5``) with datase
 Multiple independent HDF5 runs (e.g. `s0`, `s1`, …) each become one `trajectory_id`.
 All beads within one file share the same `trajectory_id`; bead identity is encoded as `bead_id = "bead_00"`, `"bead_01"`, …. Atom types are read from `input.xyz` in the simulation directory (parent of `hdf5/`), which must be a complete xyz frame (atom count, comment, one `symbol x y z` line per atom). `byte_offset` is set to `-1` (sentinel, `io_hdf5.HDF5_BYTE_OFFSET`) in all HDF5-sourced rows; a frame's structure is read from `source_file` by `frame_number` + `bead_id` instead (`bead_positions[frame, bead]`, or `positions[frame]` for a centroid row with no `bead_id`).
 
-Configured via `data.format: hdf5` and `data.positions_source: bead | centroid` (default `bead`). `trajectory_id` is derived from the parent directory name of each HDF5 file.
+Configured via `data.format: hdf5` and `data.positions_source: bead | centroid` (default `bead`). `trajectory_id` is the simulation folder (the parent of `hdf5/`), so `data.trajectory_id_pattern` and `data.bead_id_pattern` are errors with HDF5. `frame_range` cuts every bead to the same frames; `bond_break` is an error with HDF5 until it is decided whether a break in one bead should cut every bead of the run, as it cuts every bead file of an xyz trajectory.
 
 ## Architecture Notes
 
 The pipeline is layered with a data-model boundary:
 1. **Input adapters** — `io_xyz.py` (xyz files), `io_hdf5.py` (HDF5 PIMD files), `io_coordinates.py` (precomputed tables); `frame_source.py` reads the frame a coordinate-table row names, through the xyz or HDF5 reader
-2. **Geometry / coordinate engine** — `geometry.py`, `coordinates.py`
+2. **Geometry / coordinate engine** — `geometry.py`, `coordinates.py`; `coordinate_table.py` builds the coordinate table from either trajectory reader
 3. **State assignment** — `states.py`
 4. **Transition analysis** — `transitions.py`
 5. **Static plotting** — `plots_static.py`

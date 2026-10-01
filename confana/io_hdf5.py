@@ -11,30 +11,24 @@ Atom types are read from input.xyz in the simulation directory (parent of hdf5/)
 
 Public API
 ----------
-- ``build_coordinate_table_from_hdf5``
-- ``build_coordinate_table_from_hdf5_files``
-- ``HDF5FrameReader``
+- ``describe_hdf5_source``, ``read_hdf5_blocks``, ``run_trajectory_id``: the
+  HDF5 trajectory reader of the coordinate-table build
+  (``confana.coordinate_table``)
+- ``HDF5FrameReader``: single frames, for the interactive page
 - ``HDF5_BYTE_OFFSET``
 """
 
 from __future__ import annotations
 
-import logging
-import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import numpy as np
-import pandas as pd
 
 from confana.io_xyz import read_xyz_frame_by_offset
-from confana.models import FrameRecord
-
-if TYPE_CHECKING:
-    from confana.models import DoFDefinition
-
-logger = logging.getLogger(__name__)
+from confana.models import FrameBlock, FrameRecord, TrajectorySource
 
 HDF5_BYTE_OFFSET: int = -1
 """``byte_offset`` of every HDF5-sourced row: HDF5 frames have no byte position
@@ -104,151 +98,103 @@ def _check_atom_types(h5_path: Path, n_atoms: int, atom_types: list[str]) -> Non
         )
 
 
-def _derive_trajectory_id(h5_path: Path) -> str:
-    """Derive trajectory_id from the simulation directory name (e.g. 's1').
+def run_trajectory_id(h5_path: Path) -> str:
+    """Return the ``trajectory_id`` of an HDF5 run: its simulation folder name.
 
-    For path ``/some/root/s1/hdf5/trajectory.hdf5`` returns ``'s1'``.
+    For ``/some/root/s1/hdf5/trajectory.hdf5`` this is ``'s1'``.
     """
-    return h5_path.parent.parent.name
+    return Path(h5_path).parent.parent.name
 
 
 # ---------------------------------------------------------------------------
-# Per-file builder
+# Trajectory reader for the coordinate-table build
 # ---------------------------------------------------------------------------
 
+HDF5_SUFFIXES: tuple[str, ...] = (".hdf5", ".h5")
+"""File suffixes the coordinate-table build looks for in ``data.path_pattern``."""
 
-def build_coordinate_table_from_hdf5(
-    h5_path: Path | str,
-    dof_defs: list[DoFDefinition],
+_DATASETS = ("bead_positions", "positions", "potential")
+
+_BLOCK_BYTES = 64 * 2**20
+"""float64 bytes read per :class:`~confana.models.FrameBlock` (all streams)."""
+
+
+def describe_hdf5_source(
+    path: Path | str,
     *,
-    positions_source: Literal["bead", "centroid"] = "bead",
-    global_frame_offset: int = 0,
-) -> pd.DataFrame:
-    """Load one HDF5 file and return a standard coordinate table.
+    positions_source: Literal["bead", "centroid"],
+) -> TrajectorySource:
+    """Describe one HDF5 run: one stream per bead, or one centroid stream.
 
-    The full position array is loaded into RAM once, DoF are computed
-    per-bead (or for the centroid), then the array is released.
-
-    Parameters
-    ----------
-    h5_path:
-        Path to ``trajectory.hdf5``.
-    dof_defs:
-        DoF definitions (from config).
-    positions_source:
-        ``"bead"`` — one row per (frame × bead); ``"centroid"`` — one row per frame.
-    global_frame_offset:
-        Start value for ``global_frame_index``; used when concatenating
-        multiple files.
-
-    Returns
-    -------
-    pd.DataFrame
-        Standard coordinate table (same schema as the xyz-backed table).
-        ``byte_offset`` is set to ``-1`` (HDF5 frames are accessed by index).
+    Raises
+    ------
+    FileNotFoundError
+        If the run's ``input.xyz`` is missing.
+    ValueError
+        If a dataset is missing, the datasets disagree on frames or atoms, or
+        the atom count differs from ``input.xyz``.
     """
     h5py = _import_h5py()
-    from confana.coordinates import batch_extract_geometry_dof  # noqa: PLC0415
-
-    h5_path = Path(h5_path)
-    trajectory_id = _derive_trajectory_id(h5_path)
-    atom_types = _read_atom_types_from_input_xyz(h5_path)
-
-    with h5py.File(h5_path, "r") as fh:
-        bead_pos_raw: np.ndarray = fh["bead_positions"][()].astype(np.float32)
-        centroid_pos_raw: np.ndarray = fh["positions"][()].astype(np.float32)
-        potential: np.ndarray = fh["potential"][()].astype(np.float32)
-
-    n_frames, n_beads_total, n_atoms, _ = bead_pos_raw.shape
-    _check_atom_types(h5_path, n_atoms, atom_types)
-
-    logger.info(
-        "HDF5 %s: %d frames, %d beads, %d atoms (trajectory_id=%r, source=%s)",
-        h5_path.name, n_frames, n_beads_total, n_atoms, trajectory_id, positions_source,
-    )
-
-    dof_names = [d.name for d in dof_defs if d.enabled]
-
-    if positions_source == "bead":
-        bead_labels: list[str | None] = [_bead_label(i) for i in range(n_beads_total)]
-    else:
-        bead_labels = [None]  # centroid: single pass
-
-    n_slices = len(bead_labels)
-    n_rows = n_frames * n_slices
-
-    # Pre-allocate output arrays
-    frame_number_out = np.empty(n_rows, dtype=np.int64)
-    local_frame_index_out = np.empty(n_rows, dtype=np.int64)
-    global_frame_index_out = np.empty(n_rows, dtype=np.int64)
-    step_number_out = np.empty(n_rows, dtype=np.int64)
-    byte_offset_out = np.full(n_rows, HDF5_BYTE_OFFSET, dtype=np.int64)
-    atom_count_out = np.full(n_rows, n_atoms, dtype=np.int64)
-    energy_out = np.empty(n_rows, dtype=np.float32)
-
-    source_file_codes = np.zeros(n_rows, dtype=np.int32)
-    trajectory_codes = np.zeros(n_rows, dtype=np.int32)
-    bead_codes = np.empty(n_rows, dtype=np.int32)
-
-    dof_arrays: dict[str, np.ndarray] = {
-        name: np.empty(n_rows, dtype=np.float32) for name in dof_names
-    }
-
-    frame_idx_arr = np.arange(n_frames, dtype=np.int64)
-
-    for slice_idx, bead_label in enumerate(bead_labels):
-        row_start = slice_idx * n_frames
-        row_end = row_start + n_frames
-
-        if positions_source == "bead":
-            coords = bead_pos_raw[:, slice_idx, :, :]  # (n_frames, n_atoms, 3)
-        else:
-            coords = centroid_pos_raw  # (n_frames, n_atoms, 3)
-
-        dof_values = batch_extract_geometry_dof(coords, dof_defs)
-        for name in dof_names:
-            if name in dof_values:
-                dof_arrays[name][row_start:row_end] = dof_values[name]
-
-        frame_number_out[row_start:row_end] = frame_idx_arr
-        local_frame_index_out[row_start:row_end] = frame_idx_arr
-        global_frame_index_out[row_start:row_end] = (
-            frame_idx_arr + global_frame_offset + slice_idx * n_frames
+    path = Path(path).resolve()
+    atom_types = _read_atom_types_from_input_xyz(path)
+    with h5py.File(path, "r") as fh:
+        missing = [name for name in _DATASETS if name not in fh]
+        if missing:
+            raise ValueError(
+                f"{path}: no {', '.join(missing)} dataset; an HDF5 trajectory needs "
+                f"{', '.join(_DATASETS)}."
+            )
+        beads, centroid, potential = (fh[name].shape for name in _DATASETS)
+    if len(beads) != 4 or beads[3] != 3:
+        raise ValueError(
+            f"{path}: bead_positions has shape {beads}; expected (frames, beads, atoms, 3)."
         )
-        step_number_out[row_start:row_end] = frame_idx_arr
-        energy_out[row_start:row_end] = potential
-        bead_codes[row_start:row_end] = slice_idx if bead_label is not None else -1
+    n_frames, n_beads, n_atoms = beads[:3]
+    if tuple(centroid) != (n_frames, n_atoms, 3) or tuple(potential) != (n_frames,):
+        raise ValueError(
+            f"{path}: positions {centroid} and potential {potential} do not match "
+            f"bead_positions {beads}."
+        )
+    _check_atom_types(path, n_atoms, atom_types)
+    bead_ids: tuple[str | None, ...] = (
+        tuple(_bead_label(b) for b in range(n_beads)) if positions_source == "bead" else (None,)
+    )
+    return TrajectorySource(path=path, bead_ids=bead_ids, n_frames=n_frames, atom_count=n_atoms)
 
-    del bead_pos_raw, centroid_pos_raw
 
-    source_file_str = str(h5_path)
-    bead_cat_values = bead_labels  # one value per slice
+def read_hdf5_blocks(source: TrajectorySource, start: int, stop: int) -> Iterator[FrameBlock]:
+    """Read frames ``start … stop-1`` of every stream of an HDF5 source in blocks.
 
-    # Build categorical bead_id column
-    bead_id_raw: list[str | None] = []
-    for bead_label in bead_labels:
-        bead_id_raw.extend([bead_label] * n_frames)
-
-    data: dict = {
-        "frame_id": pd.array(
-            range(global_frame_offset, global_frame_offset + n_rows), dtype="Int64"
-        ),
-        "source_file": pd.Categorical([source_file_str] * n_rows),
-        "trajectory_id": pd.Categorical([trajectory_id] * n_rows),
-        "bead_id": pd.array(bead_id_raw, dtype="string"),
-        "frame_number": pd.array(frame_number_out, dtype="Int64"),
-        "byte_offset": pd.array(byte_offset_out, dtype="Int64"),
-        "atom_count": pd.array(atom_count_out, dtype="Int64"),
-        "comment_line": pd.Categorical([""] * n_rows, categories=[""]),
-        "local_frame_index": pd.array(local_frame_index_out, dtype="Int64"),
-        "global_frame_index": pd.array(global_frame_index_out, dtype="Int64"),
-    }
-    for name in dof_names:
-        data[name] = pd.array(dof_arrays[name], dtype="float32")
-    data["energy"] = pd.array(energy_out, dtype="float32")
-    data["step_number"] = pd.array(step_number_out, dtype="Int64")
-
-    return pd.DataFrame(data)
+    Each block reads one contiguous frame range of ``bead_positions`` (all
+    beads), or of ``positions`` for a centroid source (one ``None`` stream),
+    and turns it into float32. ``step_number`` is the frame index and
+    ``energy`` the ``potential`` dataset.
+    """
+    h5py = _import_h5py()
+    stop = min(stop, source.n_frames)
+    if stop <= start:
+        return
+    elements = _read_atom_types_from_input_xyz(source.path)
+    centroid = source.bead_ids == (None,)
+    frame_bytes = len(source.bead_ids) * source.atom_count * 3 * 8
+    block_frames = max(1, _BLOCK_BYTES // max(frame_bytes, 1))
+    with h5py.File(source.path, "r") as fh:
+        for first in range(start, stop, block_frames):
+            end = min(first + block_frames, stop)
+            if centroid:
+                coords = fh["positions"][first:end][:, None].astype(np.float32)
+            else:
+                coords = fh["bead_positions"][first:end].astype(np.float32)
+            frame_number = np.arange(first, end, dtype=np.int64)
+            yield FrameBlock(
+                coords=coords,
+                frame_number=frame_number,
+                byte_offset=np.full(end - first, HDF5_BYTE_OFFSET, dtype=np.int64),
+                step_number=frame_number.copy(),
+                step_missing=np.zeros(end - first, dtype=bool),
+                energy=fh["potential"][first:end].astype(np.float32),
+                elements=list(elements),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +221,7 @@ class HDF5FrameReader:
         h5py = _import_h5py()
         self.path = Path(h5_path)
         self._elements = _read_atom_types_from_input_xyz(self.path)
-        self._trajectory_id = _derive_trajectory_id(self.path)
+        self._trajectory_id = run_trajectory_id(self.path)
         self._file = h5py.File(self.path, "r")
         try:
             missing = [name for name in ("bead_positions", "positions") if name not in self._file]
@@ -330,118 +276,3 @@ class HDF5FrameReader:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-
-# ---------------------------------------------------------------------------
-# Multi-file entry point
-# ---------------------------------------------------------------------------
-
-
-def build_coordinate_table_from_hdf5_files(
-    h5_paths: list[Path | str],
-    dof_defs: list[DoFDefinition],
-    *,
-    positions_source: Literal["bead", "centroid"] = "bead",
-) -> pd.DataFrame:
-    """Process a list of HDF5 trajectory files and return one coordinate table.
-
-    Files are processed sequentially (each is loaded fully into RAM, then
-    released before the next file is opened). The resulting tables are
-    concatenated in file order.
-
-    Parameters
-    ----------
-    h5_paths:
-        Ordered list of HDF5 file paths (e.g. s0, s1, s2, …).
-    dof_defs:
-        DoF definitions (from config).
-    positions_source:
-        Forwarded to :func:`build_coordinate_table_from_hdf5`.
-
-    Returns
-    -------
-    pd.DataFrame
-        Combined coordinate table with sequential ``frame_id`` and
-        ``global_frame_index``.
-    """
-    if not h5_paths:
-        raise ValueError("h5_paths is empty — check data.path_pattern in config.")
-
-    frames: list[pd.DataFrame] = []
-    global_offset = 0
-    for h5_path in h5_paths:
-        df = build_coordinate_table_from_hdf5(
-            h5_path,
-            dof_defs,
-            positions_source=positions_source,
-            global_frame_offset=global_offset,
-        )
-        global_offset += len(df)
-        frames.append(df)
-        logger.info("Processed %s: %d rows", Path(h5_path).name, len(df))
-
-    result = pd.concat(frames, ignore_index=True)
-    # Re-assign frame_id to be strictly sequential 0..N-1
-    result["frame_id"] = pd.array(range(len(result)), dtype="Int64")
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Utilities for cache integration
-# ---------------------------------------------------------------------------
-
-
-def discover_hdf5_files(path_pattern: str) -> list[Path]:
-    """Glob for HDF5 files matching ``path_pattern``.
-
-    Only files with ``.hdf5`` or ``.h5`` suffix are returned.
-    Raises :class:`FileNotFoundError` if no files match.
-    """
-    import glob as _glob
-
-    all_paths = sorted(
-        Path(p).resolve()
-        for p in _glob.glob(path_pattern, recursive=True)
-    )
-    paths = [p for p in all_paths if p.suffix.lower() in {".hdf5", ".h5"}]
-    if not paths:
-        paths = all_paths  # keep for informative error
-    if not paths:
-        raise FileNotFoundError(
-            f"No HDF5 files matched data.path_pattern={path_pattern!r}"
-        )
-    return paths
-
-
-def build_hdf5_cache_metadata(
-    h5_paths: list[Path],
-    *,
-    path_pattern: str,
-    positions_source: str,
-    dof_defs: list[DoFDefinition],
-) -> dict:
-    """Build cache-validation metadata for an HDF5 source set."""
-    return {
-        "format": "hdf5",
-        "version": 1,
-        "path_pattern": path_pattern,
-        "positions_source": positions_source,
-        "dof_fingerprint": [
-            {
-                "name": d.name,
-                "type": d.type,
-                "atoms": list(d.atoms) if d.atoms is not None else None,
-                "domain": list(d.domain),
-            }
-            for d in dof_defs
-            if d.enabled
-        ],
-        "files": [
-            {
-                "path": str(p),
-                "size": os.stat(p).st_size,
-                "mtime": os.stat(p).st_mtime,
-            }
-            for p in h5_paths
-        ],
-    }

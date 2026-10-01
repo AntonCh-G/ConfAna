@@ -1,11 +1,11 @@
-"""Bond-break detection for xyz trajectories.
+"""Bond-break detection on coordinate arrays.
 
-Detects the first frame where an initially-bonded atom pair exceeds a distance
-cutoff.  Uses ConfAna's own xyz I/O and numpy — no ASE required.
+Finds the first frame where an atom pair bonded in a reference frame is
+farther apart than a distance cutoff. Pure numpy — no ASE, no file I/O; the
+coordinate-table build (``confana.coordinate_table``) feeds it the frames.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -42,54 +42,45 @@ def build_bond_graph(
     return bonds
 
 
-def find_bond_break_frame(
-    source_file: Path,
-    bond_cutoff: float = 2.0,
-    start_frame: int = 0,
-    end_frame: Optional[int] = None,
-) -> Optional[int]:
-    """Return the local frame index of the first bond break, or None.
+def bonded_pairs(
+    coords: np.ndarray,
+    elements: list[str],
+    mult: float = 1.1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the bonded atom pairs of one reference frame as index arrays ``(i, j)``.
 
-    Streams the file sequentially (one pass, no seeks) for efficiency on
-    network/parallel file systems.  The bond graph is built from the first
-    yielded frame (``start_frame``); each subsequent frame within the range
-    is checked against that fixed graph.
+    Same bond rule as :func:`build_bond_graph`.
+    """
+    bonds = build_bond_graph(coords, elements, mult)
+    idx_i = np.array([b[0] for b in bonds], dtype=np.int32)
+    idx_j = np.array([b[1] for b in bonds], dtype=np.int32)
+    return idx_i, idx_j
+
+
+def first_broken_frame(
+    coords: np.ndarray,
+    bonds: tuple[np.ndarray, np.ndarray],
+    cutoff: float,
+) -> Optional[int]:
+    """Return the position of the first frame in which a bond is broken, or None.
+
+    A bond is broken when its two atoms are more than *cutoff* Å apart.
 
     Parameters
     ----------
-    source_file:
-        Path to the xyz trajectory file.
-    bond_cutoff:
-        Distance threshold in Å above which a bond is considered broken.
-    start_frame:
-        First frame to include in the scan (0-based, inclusive).  The
-        reference bond graph is built from this frame.  Default 0.
-    end_frame:
-        Last frame to include in the scan (0-based, inclusive).  ``None``
-        means scan to end of file.
+    coords:
+        float32 coordinates, shape ``(n_frames, n_atoms, 3)``.
+    bonds:
+        Bonded pairs of the reference frame, from :func:`bonded_pairs`. With
+        no bonds nothing can break, so the result is None.
+    cutoff:
+        Distance threshold in Å.
     """
-    from confana.io_xyz import iter_xyz_frames  # noqa: PLC0415
-
-    max_frames = (end_frame + 1) if end_frame is not None else None
-
-    idx_i: Optional[np.ndarray] = None
-    idx_j: Optional[np.ndarray] = None
-    reference_frame_set = False
-
-    for frame in iter_xyz_frames(source_file, start_frame=start_frame, max_frames=max_frames):
-        if not reference_frame_set:
-            bonds = build_bond_graph(frame.coords, frame.elements)
-            if not bonds:
-                return None
-            idx_i = np.array([b[0] for b in bonds], dtype=np.int32)
-            idx_j = np.array([b[1] for b in bonds], dtype=np.int32)
-            reference_frame_set = True
-            continue
-
-        coords = frame.coords.astype(np.float32)
-        diffs = coords[idx_i] - coords[idx_j]
-        dists = np.sqrt((diffs * diffs).sum(axis=1))
-        if float(dists.max()) > bond_cutoff:
-            return frame.local_frame_index
-
-    return None
+    idx_i, idx_j = bonds
+    if len(idx_i) == 0 or len(coords) == 0:
+        return None
+    coords = coords.astype(np.float32, copy=False)
+    diffs = coords[:, idx_i] - coords[:, idx_j]
+    max_dists = np.sqrt((diffs * diffs).sum(axis=-1)).max(axis=1)
+    broken = np.flatnonzero(max_dists > cutoff)
+    return int(broken[0]) if len(broken) else None

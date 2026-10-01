@@ -291,3 +291,49 @@ def test_build_interactive_links_pages_to_each_other(tmp_path):
             "density_dihedrals_igor.html",
         ]
         assert [p["name"] for p in pairs if p["current"]] == [name]
+
+
+# ---------------------------------------------------------------------------
+# Input formats and overlays go through the one coordinate-table pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_scatter_overlays_keep_every_frame_and_their_own_cache(tmp_path):
+    _write_minimal_xyz(tmp_path / "traj.xyz", n_frames=5, n_atoms=9)
+    (tmp_path / "overlay").mkdir()
+    _write_minimal_xyz(tmp_path / "overlay" / "train_set.xyz", n_frames=4, n_atoms=9)
+    config_path = _write_minimal_config(tmp_path)
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["frame_range"] = {"start_frame": 1, "end_frame": 2}  # main run only
+    cfg["data"]["trajectory_id_pattern"] = r"^(traj)$"       # would not match the overlay
+    cfg["scatter_overlays"] = [
+        {"path": str(tmp_path / "overlay" / "*.xyz"), "label": "train set"},
+    ]
+    config_path.write_text(yaml.safe_dump(cfg))
+
+    result = CliRunner().invoke(cli, ["plot-densities", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "frames=2 " in result.output   # main run, cut by frame_range
+    assert "frames=4 " in result.output   # overlay, every frame
+    overlay_cache = tmp_path / "outputs" / "plots" / "overlay_cache" / "train_set"
+    assert len(list(overlay_cache.glob("*__coordinates.npz"))) == 1
+
+
+def test_build_interactive_on_hdf5_with_a_coordinate_shift(tmp_path):
+    from tests.hdf5_runs import write_hdf5_run
+
+    h5_path, _, _ = write_hdf5_run(tmp_path / "s0", n_frames=6, n_beads=2, n_atoms=9)
+    config_path = _write_minimal_config(tmp_path)
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["data"] = {"format": "hdf5", "path_pattern": str(h5_path), "positions_source": "bead"}
+    cfg["coordinate_transforms"] = {"carboxyl_dihedral": 90.0}
+    config_path.write_text(yaml.safe_dump(cfg))
+
+    result = CliRunner().invoke(cli, ["build-interactive", "--config", str(config_path)])
+
+    # The dihedral page is drawn from carboxyl_dihedral_shifted, which the HDF5
+    # build used to leave out.
+    assert result.exit_code == 0, result.output
+    assert "frames=12 " in result.output
+    assert (tmp_path / "outputs" / "plots" / "density_dihedral.html").exists()

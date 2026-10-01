@@ -11,14 +11,15 @@ The workflow is driven by YAML config. Start from an example in [examples/](../e
 
 Important sections include:
 
-- `data`: input path pattern plus trajectory and bead ID extraction rules
+- `data`: input format, path pattern, and trajectory and bead ID rules (see [Input data](#input-data))
+- `frame_range`, `bond_break`: which frames of each file go into the table (see [Input data](#input-data))
 - `dof`: named degrees of freedom (dihedral, distance, angle) with 0-based atom indices
-- `coordinate_transforms`: optional angle shifts (adds `<name>_shifted` columns)
+- `coordinate_transforms`: optional angle shifts (adds `<name>_shifted` columns; each name must be an enabled DoF)
 - `atom_mapping`: named atom groups for plane-based coordinates
 - `dihedrals`: named dihedral definitions
 - `coordinate_pairs`: which coordinate pairs get plotted
 - `conventions`: signed/unsigned angle settings
-- `cache`: frame-index and coordinate-cache settings
+- `cache`: coordinate-table and frame-index caches, worker processes (see [Input data](#input-data))
 - `density`: histogram bins, ranges, and coloring
 - `clustering`: state-assignment settings
 - `transitions`: lag, optional `dt`, and optional activation-barrier settings
@@ -26,6 +27,89 @@ Important sections include:
 - `outputs`: output directory and file settings
 
 Local configs are intentionally ignored by git because they often contain machine-specific data and output paths.
+
+## Input data
+
+These settings decide which frames the coordinate table holds. Every input format
+goes through the same steps (`confana/coordinate_table.py`); only reading the files
+differs.
+
+```yaml
+run_dir: outputs/my_run           # caches go to {run_dir}/.cache/
+
+data:
+  format: xyz                     # xyz (default) or hdf5
+  path_pattern: ./data/my_run.pos_*.xyz   # glob; ** matches nested folders
+  trajectory_id_pattern: '^(.+)_\d+$'     # optional; "my_run.pos_03" -> "my_run.pos"
+  bead_id_pattern: '_(\d+)$'              # optional; "my_run.pos_03" -> "03"
+  # positions_source: bead        # hdf5 only: bead (default) or centroid
+
+frame_range:                      # optional; 0-based frame numbers, both ends kept
+  start_frame: 1000
+  end_frame: null                 # null: to the last frame
+
+bond_break:                       # optional; xyz only
+  enabled: true
+  cutoff: 2.0                     # Å
+
+cache:
+  trajectory_cache_dir: null      # default {run_dir}/.cache
+  index_cache_dir: null           # default: beside each xyz file
+  n_jobs: 1                       # processes for rebuilding; -1 = all cores
+```
+
+**Files.** `path_pattern` is a glob; the matches are sorted by path. Files ending in
+`.xyz` (or `.hdf5` / `.h5` for `format: hdf5`) are kept; if none does, every matched
+file is read. No match is an error.
+
+**Trajectory and bead ids.** One rule decides both, for the table and for its cache:
+
+- `trajectory_id` is group 1 of `trajectory_id_pattern`, searched in the file name
+  without its extension. Without a pattern it is the name of the folder holding the
+  file, so all files in one folder form one trajectory.
+- `bead_id` is group 1 of `bead_id_pattern`; without a pattern a file has no bead.
+- A pattern without a capture group, or one that gives no id for a matched file,
+  stops the run with an error naming the file.
+
+The files of one trajectory are concatenated in name order; transitions are counted
+per trajectory and bead across them.
+
+**HDF5.** With `format: hdf5` each file is one PIMD run laid out as
+`<sim_dir>/hdf5/trajectory.hdf5` with `<sim_dir>/input.xyz` (see `CONTEXT.md`). Its
+`trajectory_id` is `<sim_dir>`'s name and its beads are `bead_00`, `bead_01`, …, so the
+two id patterns are errors with HDF5. `positions_source: centroid` gives one row per
+frame from `positions` instead of one row per bead and frame.
+
+**`frame_range`.** Keeps frames `start_frame` to `end_frame` of every file (with HDF5,
+of every bead). The table keeps each file's own frame numbers.
+
+**`bond_break`.** When enabled, the atoms bonded in the first frame of the range
+(covalent radii × 1.1) are watched, and the first later frame in which one of these
+bonds is longer than `cutoff` ends the file. Every file of the same trajectory is cut
+at the earliest such break among them; a file without a break counts as breaking
+after its last frame, so the trajectory's files are also cut to the shortest one. This
+suits one file per PIMD bead. With HDF5 it is an error until it is decided whether
+a break in one bead should cut every bead of the run in the same way.
+
+**Coordinate cache.** Each trajectory's table is cached as
+`{trajectory_id}__{hash}__coordinates.npz` in `trajectory_cache_dir`, and rebuilt
+when one of these changes: its files (path, size, modification time), its
+`trajectory_id` or a file's `bead_id`, `format`, `positions_source`, the enabled DoF
+(name, type, atoms, domain), `frame_range` or `bond_break`. Changing an id pattern
+rebuilds exactly the trajectories whose ids change; a new file in `path_pattern`
+rebuilds only the trajectory it joins. `coordinate_transforms` are applied after loading
+and never cached. The commands report `cache_hit=True` when no trajectory was
+rebuilt. Caches from ConfAna versions before this layout are rebuilt once, and frame
+indices kept in `index_cache_dir` are rescanned once (their names now carry a hash; the
+old index files are no longer read and can be deleted). `cache.coordinate_table_path`
+is no longer used and is an error.
+
+**Frame index.** Each xyz file is scanned once into `{file}.frameindex.npz` beside
+it, or `{file}.{hash of its path}.frameindex.npz` in `index_cache_dir`, and rescanned
+when the file's path, size or modification time changes.
+
+**DoF types.** The table computes `dihedral`, `distance` and `angle` DoF; a
+`collective` or `external` DoF is an error until those types are implemented.
 
 ## Dihedral Configuration
 

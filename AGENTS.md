@@ -60,7 +60,8 @@ if `dt` is set; activation free-energy barriers only if both `dt` and `temperatu
 Layers, each in its own module under `confana/`:
 1. input adapters (`io_xyz`, `io_hdf5`, `io_coordinates`), and `frame_source`, which reads
    the frame a coordinate-table row names through `io_xyz` or `io_hdf5`
-2. geometry and coordinate extraction (`geometry`, `coordinates`)
+2. geometry and coordinate extraction (`geometry`, `coordinates`), and `coordinate_table`, which
+   builds the coordinate table through one pipeline from the xyz or HDF5 trajectory reader
 3. state assignment (`states`)
 4. transition analysis (`transitions`)
 5. static plots (`plots_static`)
@@ -118,6 +119,8 @@ Layers, each in its own module under `confana/`:
 - Energy parsing from comment lines, and carrying energy through the fast loading path.
 - Element symbols for HDF5 input (`TODO-hdf5-elements` in `confana/io_hdf5.py`).
 - MD17 simulation temperature (not in the paper's main text): needed before barriers.
+- `bond_break` with HDF5 input (an error for now): whether a break in one bead cuts every
+  bead of the run, as it cuts every bead file of an xyz trajectory.
 
 ## Environment
 ```

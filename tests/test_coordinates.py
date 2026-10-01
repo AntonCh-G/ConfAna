@@ -12,7 +12,6 @@ from confana.coordinates import (
     apply_coordinate_shifts,
     apply_pair_transforms,
     build_coordinate_table_from_values,
-    build_coordinate_table_from_xyz,
     build_dof_long_table,
     extract_geometry_dof,
 )
@@ -255,73 +254,6 @@ def test_extract_geometry_dof_angle_type():
     result = extract_geometry_dof(frame, dof_defs)
     assert "bond_angle" in result
     assert 0.0 <= result["bond_angle"] <= 180.0
-
-
-# ---------------------------------------------------------------------------
-# build_coordinate_table_from_xyz
-# ---------------------------------------------------------------------------
-
-
-def test_build_table_from_xyz_has_metadata_columns():
-    frames = [_make_frame(_aspirin_like_coords(), i) for i in range(3)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS)
-    for col in _BASE_METADATA_COLUMNS:
-        assert col in df.columns, f"Missing metadata column: {col}"
-
-
-def test_build_table_from_xyz_has_dof_columns():
-    frames = [_make_frame(_aspirin_like_coords(), i) for i in range(3)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS)
-    assert "carboxyl_dihedral" in df.columns
-    assert "ester_dihedral" in df.columns
-
-
-def test_build_table_from_xyz_row_count():
-    n = 5
-    frames = [_make_frame(_aspirin_like_coords(), i) for i in range(n)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS)
-    assert len(df) == n
-
-
-def test_build_table_from_xyz_frame_ids():
-    frames = [_make_frame(_aspirin_like_coords(), i) for i in range(4)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS)
-    assert list(df["frame_id"]) == [0, 1, 2, 3]
-
-
-def test_build_table_from_xyz_dihedral_ranges():
-    frames = [_make_frame(_aspirin_like_coords(seed=i), i) for i in range(5)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS)
-    assert (df["carboxyl_dihedral"] >= -180).all() and (df["carboxyl_dihedral"] < 180).all()
-    assert (df["ester_dihedral"] >= -180).all() and (df["ester_dihedral"] < 180).all()
-
-
-def test_build_table_from_xyz_includes_additional_dof_columns():
-    frames = [_make_frame(_aspirin_like_coords(seed=i), i) for i in range(2)]
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS_WITH_EXTRA)
-    assert "igor1_dihedral" in df.columns
-    assert df["igor1_dihedral"].dtype == np.float32
-
-
-def test_build_table_from_xyz_empty():
-    df = build_coordinate_table_from_xyz([], _DOF_DEFS)
-    assert len(df) == 0
-
-
-def test_build_table_atom_count_too_small_raises():
-    """A frame with fewer atoms than max index should raise ValueError."""
-    small_coords = np.zeros((5, 3))  # indices go up to 12
-    frame = _make_frame(small_coords)
-    with pytest.raises(ValueError, match="Atom-count validation"):
-        build_coordinate_table_from_xyz([frame], _DOF_DEFS)
-
-
-def test_build_table_from_xyz_with_transforms_adds_shifted_columns():
-    frames = [_make_frame(_aspirin_like_coords(), i) for i in range(3)]
-    transforms = {"carboxyl_dihedral": 90.0}
-    df = build_coordinate_table_from_xyz(frames, _DOF_DEFS, transforms=transforms)
-    assert "carboxyl_dihedral_shifted" in df.columns
-    assert "ester_dihedral_shifted" not in df.columns
 
 
 # ---------------------------------------------------------------------------

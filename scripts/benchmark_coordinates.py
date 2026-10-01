@@ -8,14 +8,15 @@ Run from the project root:
 
 Phases
 ------
-A  Cold build  — rebuilds the coordinate table from xyz; with --n-jobs 1
-                 (the default) it also times every substep via StageTimer.
-B  Warm load   — loads the same table again from its NPZ cache.
+A  Cold build  — rebuilds the coordinate table through the same pipeline as
+                 the CLI; with --n-jobs 1 (the default) it also times every
+                 stage via StageTimer.
+B  Warm load   — loads the same table again from its NPZ caches.
 C  Micro       — times the configured DoF on synthetic coordinates, one
                  frame at a time and as one batch.
 
-The benchmark writes its own cache (``<run_dir>/.bench/coordinates.npz`` or
-``--cache``), so the run's real caches are never touched. Frame indices
+The benchmark writes its own per-trajectory caches (``<run_dir>/.bench/`` or
+``--cache-dir``), so the run's real caches are never touched. Frame indices
 (``.frameindex.npz``) are reused if present, as in a normal run.
 """
 
@@ -25,9 +26,13 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Allow running from project root without installing the package
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+if TYPE_CHECKING:
+    from confana.coordinate_table import InputSettings
 
 
 # ---------------------------------------------------------------------------
@@ -64,56 +69,44 @@ def _fmt_fps(fps: float) -> str:
     return f"{fps:.0f} frames/s"
 
 
-def _build_kwargs(cfg: dict, cache_path: Path, n_jobs: int) -> dict:
-    """Keyword arguments for load_or_build_coordinate_table_cache from a run config."""
-    from confana.coordinate_config import resolve_dof_definitions
+def _build_settings(cfg: dict, cache_dir: Path, n_jobs: int) -> InputSettings:
+    """Input settings of a run config, caching in *cache_dir* with *n_jobs* workers."""
+    from confana.coordinate_table import InputSettings
 
-    data_cfg = cfg.get("data", {})
-    if "path_pattern" not in data_cfg:
-        raise SystemExit("ERROR: data.path_pattern is not set in the config.")
-    return {
-        "path_pattern": str(data_cfg["path_pattern"]),
-        "dof_defs": resolve_dof_definitions(cfg),
-        "cache_path": cache_path,
-        "trajectory_id_pattern": data_cfg.get("trajectory_id_pattern"),
-        "bead_id_pattern": data_cfg.get("bead_id_pattern"),
-        "index_cache_dir": cfg.get("cache", {}).get("index_cache_dir"),
-        "n_jobs": n_jobs,
-        "bond_break_cfg": cfg.get("bond_break"),
-        "frame_range_cfg": cfg.get("frame_range"),
-    }
+    cache = {**(cfg.get("cache") or {}), "trajectory_cache_dir": str(cache_dir), "n_jobs": n_jobs}
+    return InputSettings.from_config({**cfg, "cache": cache})
 
 
 # ---------------------------------------------------------------------------
 # Phase A: cold build
 # ---------------------------------------------------------------------------
 
-# What each StageTimer label in io_coordinates measures.
+# What each StageTimer label in confana/coordinate_table.py measures.
 _STAGE_NOTES = {
-    "index_loading": "frame-index cache check, or the one-pass file scan",
-    "array_alloc": "pre-allocating the output arrays",
-    "frame_iter": "reading and parsing xyz frames",
-    "batch_geometry": "vectorised DoF geometry per chunk of frames",
-    "array_write": "copying chunk results into the output arrays",
-    "df_assembly": "building the pandas DataFrame",
+    "index_loading": "describing each file (frame-index cache check or one-pass scan)",
+    "frame_iter": "reading and parsing frames, block by block",
+    "batch_geometry": "vectorised DoF geometry per block of frames",
+    "bond_scan": "bond-break check per block (bond_break enabled)",
+    "df_assembly": "laying out each trajectory's table",
+    "cache_write": "writing each trajectory's NPZ and reading it back",
 }
 
 
-def _phase_a(kwargs: dict) -> int:
+def _phase_a(settings: InputSettings) -> int:
     """Force-rebuild the coordinate table and collect fine-grained timing."""
     from confana.bench import StageTimer
-    from confana.io_coordinates import load_or_build_coordinate_table_cache
+    from confana.coordinate_table import load_or_build_coordinate_table
 
     _section("Phase A — cold build (force_rebuild=True)")
 
-    n_jobs = kwargs["n_jobs"]
+    n_jobs = settings.n_jobs
     # Stage-level timer only works in serial mode; suppress it in parallel runs.
     timer = StageTimer() if n_jobs == 1 else None
     mode = "(serial — stage timer active)" if n_jobs == 1 else "(parallel — no stage breakdown)"
     print(f"  n_jobs       : {n_jobs}  {mode}")
 
     t0 = time.perf_counter()
-    df, _ = load_or_build_coordinate_table_cache(**kwargs, force_rebuild=True, _timer=timer)
+    df, _ = load_or_build_coordinate_table(settings, force_rebuild=True, timer=timer)
     t_total = time.perf_counter() - t0
 
     n = len(df)
@@ -153,26 +146,26 @@ def _print_bottlenecks(timer, total_frames: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _phase_b(kwargs: dict) -> None:
-    """Load the coordinate table from the NPZ cache and measure throughput."""
-    from confana.io_coordinates import load_or_build_coordinate_table_cache
+def _phase_b(settings: InputSettings) -> None:
+    """Load the coordinate table from the NPZ caches and measure throughput."""
+    from confana.coordinate_table import load_or_build_coordinate_table
 
     _section("Phase B — warm load (cache hit)")
 
-    cache_path = Path(kwargs["cache_path"])
-    if not cache_path.exists():
+    caches = list(Path(settings.cache_dir).glob("*__coordinates.npz"))
+    if not caches:
         print("  SKIP: cache not found — run Phase A first.")
         return
 
     t0 = time.perf_counter()
-    df, cache_hit = load_or_build_coordinate_table_cache(**kwargs)
+    df, cache_hit = load_or_build_coordinate_table(settings)
     t_total = time.perf_counter() - t0
     if not cache_hit:
         print("  NOTE: the cache was stale and has been rebuilt; this is not a warm load.")
 
     n = len(df)
     fps = _div(n, t_total)
-    size_mb = cache_path.stat().st_size / 1e6
+    size_mb = sum(p.stat().st_size for p in caches) / 1e6
     print(f"  total_frames : {n:>12,}")
     print(f"  total_time   : {t_total:>10.3f} s")
     print(f"  throughput   : {fps:>10,.0f} frames/s  ({_fmt_fps(fps)})")
@@ -255,10 +248,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to config YAML (default: %(default)s)",
     )
     parser.add_argument(
-        "--cache",
+        "--cache-dir",
         type=Path,
         default=None,
-        help="NPZ path for the benchmark's own cache (default: <run_dir>/.bench/coordinates.npz)",
+        help="Folder for the benchmark's own caches (default: <run_dir>/.bench)",
     )
     parser.add_argument(
         "--n-jobs",
@@ -281,21 +274,20 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     cfg = yaml.safe_load(cfg_path.read_text())
 
-    cache_path = args.cache
-    if cache_path is None:
-        cache_path = Path(cfg.get("run_dir") or "outputs") / ".bench" / "coordinates.npz"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_dir = args.cache_dir
+    if cache_dir is None:
+        cache_dir = Path(cfg.get("run_dir") or "outputs") / ".bench"
 
     _header("ConfAna coordinate-table benchmark")
     print(f"  config: {cfg_path}")
-    print(f"  cache : {cache_path}")
+    print(f"  cache : {cache_dir}")
 
     if not args.no_cold or not args.no_warm:
-        kwargs = _build_kwargs(cfg, cache_path, args.n_jobs)
+        settings = _build_settings(cfg, cache_dir, args.n_jobs)
         if not args.no_cold:
-            _phase_a(kwargs)
+            _phase_a(settings)
         if not args.no_warm:
-            _phase_b(kwargs)
+            _phase_b(settings)
 
     if args.micro:
         _phase_c(resolve_dof_definitions(cfg))

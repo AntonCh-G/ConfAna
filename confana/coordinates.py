@@ -1,30 +1,17 @@
-"""Coordinate extraction from xyz frames and coordinate table builder.
+"""Coordinate extraction: geometry DoF values and angular shifts.
 
-This module bridges the I/O layer (FrameRecord) and the analysis layer
-(standard coordinate table DataFrame).  It can operate in two modes:
-
-1. **Full-structure mode**: accepts a list of ``FrameRecord`` objects produced
-   by ``io_xyz.load_xyz_files`` and computes geometry DoF (dihedrals, distances,
-   bond angles) via a unified :class:`~confana.models.DoFDefinition` list.
-2. **Coordinate-only mode**: accepts a DataFrame that already contains the
-   required DoF columns and normalises them without recomputing geometry.
-
-The extraction pipeline is sequential:
-
-    xyz frames
-      → Geometry DoF (dihedral / distance / angle)
-      → External DoF joined by frame_id  [stub — NotImplementedError]
-      → Collective variables (PCA, linear)  [stub — NotImplementedError]
-      → Standard coordinate table
+The coordinate-table build (``confana.coordinate_table``) computes every
+geometry DoF (dihedral, distance, bond angle) for blocks of frames with
+:func:`batch_extract_geometry_dof` and adds the ``*_shifted`` columns of
+``coordinate_transforms`` with :func:`apply_coordinate_shifts`. A table of
+pre-computed values can be normalised with
+:func:`build_coordinate_table_from_values` instead.
 
 Public API
 ----------
 - ``extract_geometry_dof``
 - ``batch_extract_geometry_dof``
-- ``apply_external_dof``
-- ``apply_collective_dof``
 - ``apply_pair_transforms``
-- ``build_coordinate_table_from_xyz``
 - ``build_coordinate_table_from_values``
 - ``apply_coordinate_shifts``
 - ``build_dof_long_table``
@@ -68,30 +55,6 @@ _BASE_METADATA_COLUMNS = [
 ]
 
 _GEOMETRY_DOF_TYPES = frozenset({"dihedral", "distance", "angle"})
-
-
-# ---------------------------------------------------------------------------
-# DoF validation helpers
-# ---------------------------------------------------------------------------
-
-
-def _validate_atom_count_for_dofs(
-    frame: FrameRecord,
-    dof_defs: list[DoFDefinition],
-) -> None:
-    """Raise ValueError if any DoF atom index exceeds frame.atom_count."""
-    max_id = -1
-    for dof in dof_defs:
-        if dof.atoms is not None:
-            local_max = max(dof.atoms)
-            if local_max > max_id:
-                max_id = local_max
-    if max_id >= frame.atom_count:
-        raise ValueError(
-            f"DoF atom mapping references index {max_id} but frame "
-            f"{frame.frame_number} in {frame.source_file} has only "
-            f"{frame.atom_count} atoms (max 0-based index = {frame.atom_count - 1})."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -186,103 +149,6 @@ def batch_extract_geometry_dof(
 
 
 # ---------------------------------------------------------------------------
-# External DoF (stub)
-# ---------------------------------------------------------------------------
-
-
-def apply_external_dof(
-    df: pd.DataFrame,
-    dof_defs: list[DoFDefinition],
-    external_df: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Join external DoF columns onto the coordinate table by ``frame_id``.
-
-    Parameters
-    ----------
-    df:
-        Coordinate table with at least a ``frame_id`` column.
-    dof_defs:
-        Full DoF definition list.  Only entries with ``type='external'`` are
-        processed.
-    external_df:
-        DataFrame indexed on ``frame_id`` supplying external columns.  If
-        ``None`` and external DoF are configured, :class:`NotImplementedError`
-        is raised.
-
-    Returns
-    -------
-    pd.DataFrame
-        *df* with external columns appended.
-
-    Raises
-    ------
-    NotImplementedError
-        If any external DoF are configured and ``external_df`` is None.
-    """
-    external_dofs = [d for d in dof_defs if d.enabled and d.type == "external"]
-    if not external_dofs:
-        return df
-    if external_df is None:
-        names = [d.name for d in external_dofs]
-        raise NotImplementedError(
-            f"External DoF {names} require an external_df to be provided. "
-            "This feature is not yet implemented — pass external_df to "
-            "apply_external_dof once an external data source is available."
-        )
-    result = df.copy()
-    for dof in external_dofs:
-        col = dof.source_column
-        if col not in external_df.columns:
-            raise KeyError(
-                f"External DoF '{dof.name}' references source_column '{col}' "
-                f"which is not present in external_df."
-            )
-        result[dof.name] = external_df[col].values
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Collective variable DoF (stub)
-# ---------------------------------------------------------------------------
-
-
-def apply_collective_dof(
-    df: pd.DataFrame,
-    dof_defs: list[DoFDefinition],
-) -> pd.DataFrame:
-    """Compute collective variables and append them to the coordinate table.
-
-    Parameters
-    ----------
-    df:
-        Coordinate table with geometry DoF columns already populated.
-    dof_defs:
-        Full DoF definition list.  Only entries with ``type='collective'`` are
-        processed.
-
-    Returns
-    -------
-    pd.DataFrame
-        *df* with collective variable columns appended.
-
-    Raises
-    ------
-    NotImplementedError
-        Always — collective variables (PCA, linear combinations) are not yet
-        implemented.
-    """
-    collective_dofs = [d for d in dof_defs if d.enabled and d.type == "collective"]
-    if not collective_dofs:
-        return df
-    names = [d.name for d in collective_dofs]
-    raise NotImplementedError(
-        f"Collective variable DoF {names} are not yet implemented. "
-        "Register them in the dof: config list with type: collective and "
-        "implement the computation in apply_collective_dof."
-    )
-
-
-# ---------------------------------------------------------------------------
 # Pair transform application
 # ---------------------------------------------------------------------------
 
@@ -355,134 +221,6 @@ def apply_pair_transforms(
             )
 
     return x, y
-
-
-# ---------------------------------------------------------------------------
-# Table builder from xyz frames
-# ---------------------------------------------------------------------------
-
-
-def build_coordinate_table_from_xyz(
-    frames: list[FrameRecord],
-    dof_defs: list[DoFDefinition],
-    transforms: dict[str, float] | None = None,
-) -> pd.DataFrame:
-    """Build the standard coordinate table from a list of FrameRecord objects.
-
-    Sequential pipeline:
-    1. Compute geometry DoF (dihedral, distance, angle) per frame.
-    2. Apply external DoF (stub — skipped if none configured).
-    3. Apply collective DoF (stub — skipped if none configured).
-    4. Apply angular shifts to produce ``*_shifted`` companion columns.
-
-    Parameters
-    ----------
-    frames:
-        List of ``FrameRecord`` objects with coords populated.
-    dof_defs:
-        Ordered list of :class:`~confana.models.DoFDefinition` objects (enabled
-        and disabled); disabled ones are skipped.
-    transforms:
-        Optional ``{column_name: shift_degrees}`` map.  Applied after
-        extraction to produce ``*_shifted`` columns.  Pass ``None`` or ``{}``
-        to skip.
-
-    Returns
-    -------
-    pd.DataFrame
-        Standard coordinate table.  Contains base metadata columns plus one
-        column per enabled geometry DoF, plus ``energy`` and ``step_number``.
-        State columns are added later by the state-assignment step.
-
-    Raises
-    ------
-    ValueError
-        On the first frame that fails geometry or atom-count validation.
-        The error message includes ``frame_number`` and ``source_file``.
-    NotImplementedError
-        If collective or external DoF are configured and not yet implemented.
-    """
-    enabled_dofs = [d for d in dof_defs if d.enabled]
-    geometry_dofs = [d for d in enabled_dofs if d.type in _GEOMETRY_DOF_TYPES]
-    dof_names = [d.name for d in geometry_dofs]
-
-    rows: list[dict] = []
-
-    for frame_id, frame in enumerate(frames):
-        # Validate atom indices for all geometry DoF
-        try:
-            _validate_atom_count_for_dofs(frame, geometry_dofs)
-        except ValueError as exc:
-            raise ValueError(
-                f"Atom-count validation failed for frame {frame.frame_number} "
-                f"in {frame.source_file}: {exc}"
-            ) from exc
-
-        # Compute geometry DoF
-        try:
-            geom_values = extract_geometry_dof(frame, geometry_dofs)
-        except ValueError as exc:
-            raise ValueError(
-                f"Geometry DoF computation failed for frame {frame.frame_number} "
-                f"in {frame.source_file}: {exc}"
-            ) from exc
-
-        rows.append(
-            {
-                "frame_id": frame_id,
-                "source_file": frame.source_file,
-                "trajectory_id": frame.trajectory_id,
-                "bead_id": frame.bead_id,
-                "frame_number": frame.frame_number,
-                "byte_offset": frame.byte_offset,
-                "atom_count": frame.atom_count,
-                "comment_line": frame.comment_line,
-                "local_frame_index": frame.local_frame_index,
-                "global_frame_index": frame.global_frame_index,
-                "energy": frame.energy,
-                "step_number": frame.step_number,
-                **geom_values,
-            }
-        )
-
-    if not rows:
-        return pd.DataFrame(
-            columns=_BASE_METADATA_COLUMNS + ["energy", "step_number"] + dof_names
-        )
-
-    df = pd.DataFrame(rows)
-
-    # Apply canonical dtypes
-    int_cols = [
-        "frame_id", "frame_number", "byte_offset", "atom_count",
-        "local_frame_index", "global_frame_index", "step_number",
-    ]
-    for col in int_cols:
-        if col in df.columns:
-            df[col] = df[col].astype("Int64")
-
-    for col in dof_names:
-        if col in df.columns:
-            df[col] = df[col].astype("float32")
-
-    if "energy" in df.columns:
-        df["energy"] = df["energy"].astype("float32")
-
-    for col in ("bead_id",):
-        if col in df.columns:
-            df[col] = df[col].astype("string")
-
-    # Pipeline stage 2: external DoF (stub — no-op if none configured)
-    df = apply_external_dof(df, enabled_dofs)
-
-    # Pipeline stage 3: collective DoF (stub — no-op if none configured)
-    df = apply_collective_dof(df, enabled_dofs)
-
-    # Pipeline stage 4: angular shifts
-    if transforms:
-        df = apply_coordinate_shifts(df, transforms)
-
-    return df
 
 
 # ---------------------------------------------------------------------------

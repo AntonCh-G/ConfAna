@@ -20,14 +20,12 @@ Public API
 ----------
 - ``assign_conformer_states``
 - ``assign_conformer_states_from_config``
-- ``load_or_build_trajectory_states``
 - ``resolve_state_groupby``
 - ``build_bin_state_overlay``
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -478,102 +476,6 @@ def assign_conformer_states_from_config(
             )
 
     return result
-
-
-def load_or_build_trajectory_states(
-    df_traj: pd.DataFrame,
-    trajectory_id: str,
-    clustering_config: dict[str, Any],
-    cache_dir: str | Path,
-    *,
-    coord_cache_meta: dict[str, Any] | None = None,
-    force_rebuild: bool = False,
-) -> tuple[pd.DataFrame, bool]:
-    """Load or build the state-label cache for one trajectory.
-
-    The cache file is stored at::
-
-        {cache_dir}/{trajectory_id}__states.npz
-
-    It contains ``frame_id`` plus all ``state_<pair_name>`` columns.
-
-    Parameters
-    ----------
-    df_traj:
-        Coordinate table for one trajectory (all beads included).
-    trajectory_id:
-        Trajectory identifier; used to name the cache file.
-    clustering_config:
-        Dict from ``configs/default.yaml`` under ``clustering:`` or the
-        full root config.
-    cache_dir:
-        Directory where the state NPZ is stored.
-    coord_cache_meta:
-        Optional coordinate-cache fingerprint dict to embed in the state
-        cache for chained invalidation.
-    force_rebuild:
-        When True, bypass any existing cache.
-
-    Returns
-    -------
-    tuple[pd.DataFrame, bool]
-        ``(df_with_states, cache_hit)``
-    """
-    from confana.cache import matches  # noqa: PLC0415
-    from confana.io_coordinates import _coerce_dtypes, _read_coordinate_npz, _write_coordinate_npz  # noqa: PLC0415
-
-    cache_dir = Path(cache_dir)
-    safe_id = trajectory_id.replace("/", "_").replace(" ", "_")
-    cache_path = cache_dir / f"{safe_id}__states.npz"
-
-    root_cfg = clustering_config if "clustering" in clustering_config else {}
-    clustering_section = clustering_config.get("clustering", clustering_config)
-
-    pairs = list_coordinate_pairs(root_cfg) if root_cfg else []
-    state_cols = [pair.state_col for _, pair in pairs]
-
-    state_meta: dict[str, Any] = {
-        "version": 2,
-        "trajectory_id": trajectory_id,
-        "clustering": {
-            "algorithm": clustering_section.get("algorithm", "grid"),
-            "groupby": clustering_section.get("groupby"),
-            "default": dict(clustering_section.get("default", {}) or {}),
-            # Include per-pair overrides so any change invalidates cache
-            "pairs": {
-                name: dict(clustering_section.get(name, {}) or {})
-                for name, _ in pairs
-            },
-        },
-        "coordinate_pairs": [
-            {"name": n} for n, _ in pairs
-        ],
-        "coord_cache_meta": coord_cache_meta,
-    }
-
-    if not force_rebuild and cache_path.exists() and matches(cache_path, state_meta):
-        state_df = _read_coordinate_npz(cache_path)
-        result = df_traj.copy()
-        available_state_cols = [c for c in state_cols if c in state_df.columns]
-        for col in available_state_cols:
-            if col in result.columns:
-                result = result.drop(columns=[col])
-        join_cols = ["frame_id"] + available_state_cols
-        result = result.merge(
-            state_df[join_cols],
-            on="frame_id",
-            how="left",
-        )
-        return _coerce_dtypes(result), True
-
-    result = assign_conformer_states_from_config(df_traj, clustering_section)
-
-    save_cols = ["frame_id"] + [c for c in state_cols if c in result.columns]
-    state_df_save = result[save_cols].copy()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _write_coordinate_npz(state_df_save, cache_path, cache_metadata=state_meta)
-
-    return result, False
 
 
 # ---------------------------------------------------------------------------

@@ -9,23 +9,25 @@ Design principles
   in memory; it only records byte offsets and lightweight metadata.
 * Random-access retrieval (``read_xyz_frame``, ``read_xyz_frame_by_offset``)
   reads exactly one frame by seeking to the stored byte offset.
-* The frame index is cached to disk as JSON alongside the source file (or in a
-  configured cache directory) and is invalidated when file path, size, or
-  modification time changes.
+* The frame index is cached to disk as NPZ alongside the source file (or in a
+  configured cache directory, see ``index_cache_path``) and is invalidated
+  when file path, size, or modification time changes.
 
 Public API
 ----------
 - ``iter_xyz_frames``
-- ``load_xyz_files``
 - ``scan_xyz_frame_offsets``
 - ``load_or_build_xyz_index``
 - ``read_xyz_frame``
 - ``read_xyz_frame_by_offset``
 - ``extract_frame_metadata``
+- ``index_cache_path``, ``describe_xyz_source``, ``read_xyz_blocks``: the xyz
+  trajectory reader of the coordinate-table build
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -36,7 +38,7 @@ from typing import Iterator, Optional
 import numpy as np
 import numpy.typing as npt
 
-from confana.models import FrameIndex, FrameIndexEntry, FrameRecord
+from confana.models import FrameBlock, FrameIndex, FrameIndexEntry, FrameRecord, TrajectorySource
 
 logger = logging.getLogger(__name__)
 
@@ -358,10 +360,7 @@ def load_or_build_xyz_index(
     """
     path = Path(path).resolve()
 
-    if cache_path is None:
-        cache_path = path.parent / (path.name + ".frameindex.npz")
-    else:
-        cache_path = Path(cache_path)
+    cache_path = index_cache_path(path, None) if cache_path is None else Path(cache_path)
 
     # Try loading from cache
     if cache_path.exists():
@@ -380,6 +379,7 @@ def load_or_build_xyz_index(
 
     # Persist cache
     try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         _write_index_cache(index, cache_path)
     except PermissionError:
         warnings.warn(
@@ -399,8 +399,6 @@ def load_or_build_xyz_index(
 
 def iter_xyz_frames(
     path: str | Path,
-    trajectory_id_pattern: Optional[str] = None,
-    bead_id_pattern: Optional[str] = None,
     max_frames: Optional[int] = None,
     start_frame: int = 0,
 ) -> Iterator[FrameRecord]:
@@ -414,12 +412,6 @@ def iter_xyz_frames(
     ----------
     path:
         Path to one multi-frame xyz file.
-    trajectory_id_pattern:
-        Optional regex applied to the filename stem; group 1 becomes the
-        per-frame ``trajectory_id``.
-    bead_id_pattern:
-        Optional regex applied to the filename stem; group 1 becomes the
-        per-frame ``bead_id``.
     max_frames:
         Stop after yielding frames up to (but not including) this frame
         number.  ``None`` means no upper limit.
@@ -430,12 +422,11 @@ def iter_xyz_frames(
     Yields
     ------
     FrameRecord
-        Sequentially parsed frames with ``local_frame_index`` populated and
-        filename-derived ``trajectory_id`` / ``bead_id`` attached.
+        Sequentially parsed frames with ``local_frame_index`` populated.
+        ``trajectory_id`` and ``bead_id`` are left unset: the coordinate-table
+        build decides them (``confana.coordinate_table``).
     """
     path = Path(path).resolve()
-    traj_id = _derive_trajectory_id(path, trajectory_id_pattern)
-    bead_id = _derive_bead_id(path, bead_id_pattern)
 
     frame_number = 0
     with open(path, "rb") as fh:
@@ -476,8 +467,6 @@ def iter_xyz_frames(
                 lines.append(atom_line)
 
             record = _parse_xyz_block(lines, str(path), byte_offset, frame_number)
-            record.trajectory_id = traj_id
-            record.bead_id = bead_id
             record.local_frame_index = frame_number
             frame_number += 1
             if frame_number - 1 < start_frame:
@@ -630,135 +619,97 @@ def extract_frame_metadata(
 
 
 # ---------------------------------------------------------------------------
-# Filename-based ID derivation
+# Trajectory reader for the coordinate-table build
 # ---------------------------------------------------------------------------
 
+XYZ_SUFFIXES: tuple[str, ...] = (".xyz",)
+"""File suffixes the coordinate-table build looks for in ``data.path_pattern``."""
 
-def _derive_trajectory_id(path: Path, pattern: Optional[str]) -> str:
-    """Derive trajectory_id from a filename stem using a regex pattern.
+_BLOCK_FRAMES = 65_536
+"""Frames per :class:`~confana.models.FrameBlock` (about 16 MB for 21 atoms)."""
 
-    The regex is applied to the filename stem (name without extension).
-    Group 1 of the match is captured as the trajectory_id.
 
-    If ``pattern`` is None or produces no match, falls back to the parent
-    directory name (if the file is not at the root of a drive) or the stem.
+def index_cache_path(path: str | Path, cache_dir: Optional[str | Path]) -> Path:
+    """Return where the frame index of *path* is cached.
 
-    # TODO-trajectory_id: confirm regex convention with user if filenames
-    # differ from the my_run.pos_NN pattern.
+    Without *cache_dir*, beside the file as ``{name}.frameindex.npz``. With it,
+    as ``{name}.{hash}.frameindex.npz`` in *cache_dir*, the hash taken from the
+    file's absolute path, so same-named files in different folders keep
+    separate indices.
     """
-    stem = path.stem  # e.g. "my_run.pos_00"
-    if pattern:
-        m = re.search(pattern, stem)
-        if m and m.lastindex and m.lastindex >= 1:
-            return m.group(1)
-        logger.warning(
-            "trajectory_id_pattern %r did not match stem %r; "
-            "falling back to parent directory name.",
-            pattern,
-            stem,
-        )
-    # Fallback: parent directory name if meaningful, else stem
-    parent = path.parent.name
-    return parent if parent else stem
+    path = Path(path).resolve()
+    if cache_dir is None:
+        return path.parent / f"{path.name}.frameindex.npz"
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
+    return Path(cache_dir) / f"{path.name}.{digest}.frameindex.npz"
 
 
-def _derive_bead_id(path: Path, pattern: Optional[str]) -> Optional[str]:
-    """Derive bead_id from a filename stem using a regex pattern.
+def describe_xyz_source(
+    path: str | Path,
+    *,
+    bead_id: Optional[str],
+    index_cache_dir: Optional[str | Path] = None,
+) -> TrajectorySource:
+    """Describe one xyz file from its frame index (built or loaded from cache).
 
-    Group 1 of the match is captured as the bead_id string.
-    Returns None if ``pattern`` is None or produces no match.
-
-    # TODO-bead_id: confirm regex convention with user if filenames differ
-    # from the my_run.pos_NN pattern.
+    Raises
+    ------
+    ValueError
+        If the file is malformed, or its frames do not all have the same atom
+        count.
     """
-    if not pattern:
-        return None
-    stem = path.stem  # e.g. "my_run.pos_00"
-    m = re.search(pattern, stem)
-    if m and m.lastindex and m.lastindex >= 1:
-        return m.group(1)
-    return None
+    path = Path(path).resolve()
+    frame_index = load_or_build_xyz_index(path, cache_path=index_cache_path(path, index_cache_dir))
+    atom_counts = np.fromiter((e.atom_count for e in frame_index.entries), dtype=np.int64)
+    atom_count = int(atom_counts[0]) if len(atom_counts) else 0
+    differing = np.flatnonzero(atom_counts != atom_count)
+    if len(differing):
+        frame = int(differing[0])
+        raise ValueError(
+            f"{path}: frame {frame} has {int(atom_counts[frame])} atoms but frame 0 "
+            f"has {atom_count}; every frame of a trajectory file must have the same atoms."
+        )
+    return TrajectorySource(
+        path=path, bead_ids=(bead_id,), n_frames=len(frame_index), atom_count=atom_count
+    )
 
 
-# ---------------------------------------------------------------------------
-# Multi-file loading
-# ---------------------------------------------------------------------------
+def read_xyz_blocks(source: TrajectorySource, start: int, stop: int) -> Iterator[FrameBlock]:
+    """Stream frames ``start … stop-1`` of an xyz source in float32 blocks.
 
-
-def load_xyz_files(
-    path_pattern: str,
-    trajectory_id_pattern: Optional[str] = None,
-    bead_id_pattern: Optional[str] = None,
-    cache_dir: Optional[str | Path] = None,
-) -> list[FrameRecord]:
-    """Load all frames from all xyz files matching ``path_pattern``.
-
-    Files are processed in sorted order.  For each file, a byte-offset index
-    is built (or loaded from cache) and then every frame is read sequentially.
-
-    Trajectory IDs and bead IDs are derived from filenames using the supplied
-    regex patterns (or the defaults documented in ``_derive_trajectory_id`` and
-    ``_derive_bead_id``).
-
-    ``local_frame_index`` is the 0-based frame position within each file.
-    ``global_frame_index`` is the 0-based position across all files combined
-    (in sorted file order).
-
-    Parameters
-    ----------
-    path_pattern:
-        Glob pattern, e.g. ``"./data/*.xyz"``.
-    trajectory_id_pattern:
-        Regex applied to filename stem; group 1 → trajectory_id.
-    bead_id_pattern:
-        Regex applied to filename stem; group 1 → bead_id.
-    cache_dir:
-        Directory for frame-index JSON caches.  None = alongside source files.
-
-    Returns
-    -------
-    list[FrameRecord]
-        All frames from all matched files, in sorted-file then frame order.
+    The file is parsed sequentially (frames before *start* are read and
+    discarded); at most one block of coordinates is held at a time. Energy is
+    NaN: it is not parsed from comment lines yet (``TODO-energy``).
     """
-    import glob
-
-    paths = sorted(Path(p).resolve() for p in glob.glob(path_pattern, recursive=True))
-    if not paths:
-        warnings.warn(
-            f"No files matched path_pattern={path_pattern!r}",
-            RuntimeWarning,
-            stacklevel=2,
+    stop = min(stop, source.n_frames)
+    if stop <= start:
+        return
+    frames = iter_xyz_frames(source.path, max_frames=stop, start_frame=start)
+    for block_start in range(start, stop, _BLOCK_FRAMES):
+        n = min(_BLOCK_FRAMES, stop - block_start)
+        coords = np.empty((n, 1, source.atom_count, 3), dtype=np.float32)
+        frame_number = np.empty(n, dtype=np.int64)
+        byte_offset = np.empty(n, dtype=np.int64)
+        step_number = np.zeros(n, dtype=np.int64)
+        step_missing = np.zeros(n, dtype=bool)
+        elements: list[str] = []
+        for i in range(n):
+            frame = next(frames)
+            coords[i, 0] = frame.coords
+            frame_number[i] = frame.frame_number
+            byte_offset[i] = frame.byte_offset
+            if frame.step_number is None:
+                step_missing[i] = True
+            else:
+                step_number[i] = frame.step_number
+            if i == 0:
+                elements = frame.elements
+        yield FrameBlock(
+            coords=coords,
+            frame_number=frame_number,
+            byte_offset=byte_offset,
+            step_number=step_number,
+            step_missing=step_missing,
+            energy=np.full(n, np.nan, dtype=np.float32),
+            elements=elements,
         )
-        return []
-
-    all_records: list[FrameRecord] = []
-    global_idx = 0
-
-    for file_path in paths:
-        cache_path = None
-        if cache_dir is not None:
-            cache_path = Path(cache_dir) / (file_path.name + ".frameindex.npz")
-
-        traj_id = _derive_trajectory_id(file_path, trajectory_id_pattern)
-        bead_id = _derive_bead_id(file_path, bead_id_pattern)
-
-        frame_index = load_or_build_xyz_index(file_path, cache_path=cache_path)
-
-        for local_idx, entry in enumerate(frame_index.entries):
-            record = read_xyz_frame(file_path, entry.frame_number, frame_index)
-            record.trajectory_id = traj_id
-            record.bead_id = bead_id
-            record.local_frame_index = local_idx
-            record.global_frame_index = global_idx
-            all_records.append(record)
-            global_idx += 1
-
-        logger.info(
-            "Loaded %d frames from %s (traj=%s, bead=%s)",
-            len(frame_index),
-            file_path.name,
-            traj_id,
-            bead_id,
-        )
-
-    return all_records

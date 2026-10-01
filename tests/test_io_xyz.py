@@ -10,10 +10,9 @@ import numpy as np
 import pytest
 
 from confana.io_xyz import (
-    _derive_bead_id,
-    _derive_trajectory_id,
     _parse_comment_line,
     extract_frame_metadata,
+    index_cache_path,
     iter_xyz_frames,
     load_or_build_xyz_index,
     read_xyz_frame,
@@ -187,19 +186,13 @@ def test_iter_xyz_frames_yields_all_frames(xyz_file: Path):
     assert [frame.frame_number for frame in frames] == [0, 1, 2]
 
 
-def test_iter_xyz_frames_sets_local_indices_and_filename_ids(tmp_path: Path):
+def test_iter_xyz_frames_sets_local_indices(tmp_path: Path):
     path = tmp_path / "my_run.pos_03.xyz"
     path.write_bytes(_make_xyz_bytes(n_frames=2))
-    frames = list(
-        iter_xyz_frames(
-            path,
-            trajectory_id_pattern=r"^(.+)_\d+$",
-            bead_id_pattern=r"_(\d+)$",
-        )
-    )
+    frames = list(iter_xyz_frames(path))
     assert [frame.local_frame_index for frame in frames] == [0, 1]
-    assert all(frame.trajectory_id == "my_run.pos" for frame in frames)
-    assert all(frame.bead_id == "03" for frame in frames)
+    # Ids are the coordinate-table build's business, not the parser's.
+    assert all(frame.trajectory_id is None and frame.bead_id is None for frame in frames)
 
 
 # ---------------------------------------------------------------------------
@@ -305,39 +298,20 @@ def test_parse_comment_no_step():
 
 
 # ---------------------------------------------------------------------------
-# _derive_trajectory_id / _derive_bead_id
+# index_cache_path
 # ---------------------------------------------------------------------------
 
 
-def test_derive_trajectory_id_pattern(tmp_path: Path):
-    p = tmp_path / "my_run.pos_07.xyz"
-    traj = _derive_trajectory_id(p, pattern=r"^(.+)_\d+$")
-    assert traj == "my_run.pos"
+def test_index_cache_path_defaults_to_beside_the_file(tmp_path: Path):
+    path = tmp_path / "traj.xyz"
+    assert index_cache_path(path, None) == path.resolve().parent / "traj.xyz.frameindex.npz"
 
 
-def test_derive_trajectory_id_fallback(tmp_path: Path):
-    """No pattern match → fallback to parent directory name."""
-    p = tmp_path / "single_file.xyz"
-    traj = _derive_trajectory_id(p, pattern=None)
-    assert traj == tmp_path.name or traj == "single_file"
-
-
-def test_derive_bead_id_pattern(tmp_path: Path):
-    p = tmp_path / "my_run.pos_07.xyz"
-    bead = _derive_bead_id(p, pattern=r"_(\d+)$")
-    assert bead == "07"
-
-
-def test_derive_bead_id_no_pattern(tmp_path: Path):
-    p = tmp_path / "my_run.pos_07.xyz"
-    bead = _derive_bead_id(p, pattern=None)
-    assert bead is None
-
-
-def test_derive_bead_id_no_match(tmp_path: Path):
-    p = tmp_path / "no_digits_here.xyz"
-    bead = _derive_bead_id(p, pattern=r"_(\d+)$")
-    assert bead is None
+def test_index_cache_path_in_a_cache_dir_is_unique_per_folder(tmp_path: Path):
+    a = index_cache_path(tmp_path / "a" / "traj.xyz", tmp_path / "idx")
+    b = index_cache_path(tmp_path / "b" / "traj.xyz", tmp_path / "idx")
+    assert a.parent == b.parent == tmp_path / "idx"
+    assert a != b and a.name.startswith("traj.xyz.") and a.name.endswith(".frameindex.npz")
 
 
 # ---------------------------------------------------------------------------
