@@ -1873,6 +1873,27 @@ def test_phone_pin_button_pins_the_nearest_frame_in_per_frame_mode(open_phone_pa
     assert page.errors == []
 
 
+def _scroll_report(page) -> dict:
+    """How far the page can scroll and where it is, for a failed scroll assertion.
+
+    The phone scroll tests pass on macOS but have failed on GitHub's Linux
+    runner; this says whether the page was too short to scroll, zoomed, or
+    scrolled somewhere other than the window.
+    """
+    return page.page.evaluate(
+        """() => {
+          const de = document.documentElement, vv = window.visualViewport;
+          return {scrollY: window.scrollY, innerHeight: window.innerHeight, innerWidth: window.innerWidth,
+                  pageHeight: de.scrollHeight, canScroll: de.scrollHeight - window.innerHeight,
+                  scrollingElement: document.scrollingElement && document.scrollingElement.tagName,
+                  bodyScrollTop: document.body.scrollTop,
+                  visual: vv && {scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop, height: vv.height},
+                  font: getComputedStyle(document.body).fontFamily,
+                  fontUsedHeight: Math.round(document.querySelector('.ca-header').getBoundingClientRect().height)};
+        }"""
+    )
+
+
 def _swipe_up(page, selector: str, distance: int = 150) -> None:
     """A finger swipe that starts on the element at *selector*, as when scrolling down.
 
@@ -1900,7 +1921,7 @@ def test_phone_swipe_on_the_map_scrolls_the_page_and_never_zooms(open_phone_page
     page = open_phone_page(pages["bin"])
     ranges = _axis_ranges(page)
     _swipe_up(page, ".nsewdrag")
-    assert page.page.evaluate("window.scrollY") > 0
+    assert page.page.evaluate("window.scrollY") > 0, _scroll_report(page)
     assert _axis_ranges(page) == ranges
     # No zoom or pan tools either: the map does not zoom on touch screens.
     assert not page.page.locator(".modebar").is_visible()
@@ -1925,6 +1946,34 @@ def test_phone_double_tap_is_two_previews_and_keeps_the_pins(open_phone_page, pa
     assert page.errors == []
 
 
+def _settled_pin_badge(page) -> dict:
+    """Centre of the last pin badge's tappable box, once the badge has stopped moving.
+
+    A preview tap redraws the pin badges a few pixels away a moment later, so
+    a point read too early lands on the map beside the badge and previews a
+    bin instead. Waits until the box holds still and is what a tap there hits.
+    """
+    locate = """() => {
+      const bg = [...document.querySelectorAll('.annotation rect.bg')].pop();
+      if (!bg) return null;
+      const r = bg.getBoundingClientRect();
+      return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+    }"""
+    page.page.wait_for_function(
+        f"""() => new Promise((resolve) => {{
+          const locate = {locate};
+          const first = locate();
+          setTimeout(() => requestAnimationFrame(() => {{
+            const now = locate();
+            const hit = now && document.elementFromPoint(now.x, now.y);
+            resolve(!!first && !!now && first.x === now.x && first.y === now.y
+                    && !!hit && !!hit.closest('.annotation'));
+          }}), 150);
+        }})"""
+    )
+    return page.page.evaluate(locate)
+
+
 def test_phone_tap_on_a_pin_badge_shows_its_card_and_keeps_the_preview(open_phone_page, pages):
     page = open_phone_page(pages["bin"])
     bins = page.bins()["full"]
@@ -1933,14 +1982,10 @@ def test_phone_tap_on_a_pin_badge_shows_its_card_and_keeps_the_preview(open_phon
     page.card_count_is(1)
     _tap_bin(page, bins[-1])
 
-    badge = page.page.evaluate(
-        """() => { const a = [...document.querySelectorAll('.annotation')].pop().getBoundingClientRect();
-                   return {x: a.x + a.width / 2, y: a.y + a.height / 2}; }"""
-    )
-    _tap(page, badge)
+    _tap(page, _settled_pin_badge(page))
     page.wait_until("window.scrollY > 0")
     # Tapping the badge is asking for the card: the page scrolls to it.
-    assert page.page.evaluate("window.scrollY") > 0
+    assert page.page.evaluate("window.scrollY") > 0, _scroll_report(page)
     assert page.state()["status"] == f"Bin {bins[-1]['key']}"
     assert len(page.state()["cards"]) == 1
     assert page.errors == []
@@ -1969,7 +2014,7 @@ def test_phone_3d_view_is_locked_until_tapped_so_swipes_scroll_the_page(open_pho
     # Locked: a swipe over the view scrolls the page and leaves the molecule.
     camera = page.camera(view)
     _swipe_up(page, view, distance=60)
-    assert page.page.evaluate("window.scrollY") > 0
+    assert page.page.evaluate("window.scrollY") > 0, _scroll_report(page)
     assert page.camera(view) == camera
 
     # Unlocked: the same swipe turns the molecule, and the page stays put.
